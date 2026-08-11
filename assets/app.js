@@ -1545,16 +1545,20 @@ function renderTop(rows) {
     + (['cpa', 'roas'].includes(S.topMetric) ? ' — campagnes de moins de 5 clics exclues' : '');
 
   if (S.views.top === 'table') {
+    const cols = [
+      { key: 'name', label: 'Campagne', text: true },
+      { key: 'cost', label: 'Coût', fmt: (v) => fmtMoney(v) },
+      { key: 'clicks', label: 'Clics', fmt: (v) => fmtInt(v) },
+      { key: 'conversions', label: 'Conv.', fmt: fmtNum1 },
+    ];
+    // L'indicateur de classement n'est ajouté que s'il n'est pas déjà en colonne :
+    // sinon « Coût », qui est le classement par défaut, apparaîtrait deux fois.
+    if (!cols.some((c) => c.key === S.topMetric)) {
+      cols.push({ key: S.topMetric, label: m.label, fmt: (v) => m.fmt(v) });
+    }
     renderTable(els.topBody, {
-      scroll: true,
+      cols, scroll: true,
       caption: `Campagnes classées par ${m.label}`,
-      cols: [
-        { key: 'name', label: 'Campagne', text: true },
-        { key: 'cost', label: 'Coût', fmt: (v) => fmtMoney(v) },
-        { key: 'clicks', label: 'Clics', fmt: (v) => fmtInt(v) },
-        { key: 'conversions', label: 'Conv.', fmt: fmtNum1 },
-        { key: S.topMetric, label: m.label, fmt: (v) => m.fmt(v) },
-      ],
       rows: sorted.map((r) => ({ ...r, _sub: r.account, _swatch: seriesColor(entitySlot(r.accountIdx)) })),
     });
     return;
