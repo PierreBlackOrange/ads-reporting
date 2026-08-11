@@ -10,9 +10,10 @@ assets/styles.css     palette, thème clair/sombre, mise en page
 assets/app.js         agrégation en mémoire et rendu SVG
 data/data.json        les données (le seul fichier à régénérer)
 scripts/
-  fetch_ads_data.py   récupère les vraies performances depuis l'API Google Ads
-  gen_demo_data.py    génère un jeu de démonstration au même schéma
-  config.example.json modèle de configuration à copier
+  fetch_ads_data.py     récupère les vraies performances depuis l'API Google Ads
+  get_refresh_token.py  obtient le refresh token OAuth (une seule fois)
+  gen_demo_data.py      génère un jeu de démonstration au même schéma
+  config.example.json   modèle de configuration à copier
 ```
 
 ---
@@ -63,47 +64,46 @@ Puis ouvrez <http://localhost:8000>.
 | **Client ID / Client secret** | [Google Cloud Console](https://console.cloud.google.com) → activez *Google Ads API* → *Identifiants* → ID client OAuth de type **Application de bureau**. |
 | **Refresh token** | Voir ci-dessous. |
 
-### 2.2 Obtenir le refresh token
-
-Depuis la machine où vous êtes connecté au compte Google qui a accès au MCC :
-
-```bash
-pip install google-auth-oauthlib
-
-python -c "
-from google_auth_oauthlib.flow import InstalledAppFlow
-flow = InstalledAppFlow.from_client_config(
-    {'installed': {
-        'client_id': 'VOTRE_CLIENT_ID',
-        'client_secret': 'VOTRE_CLIENT_SECRET',
-        'auth_uri': 'https://accounts.google.com/o/oauth2/auth',
-        'token_uri': 'https://oauth2.googleapis.com/token'}},
-    scopes=['https://www.googleapis.com/auth/adwords'])
-creds = flow.run_local_server(port=8080)
-print('\nrefresh_token =', creds.refresh_token)
-"
-```
-
-Un navigateur s'ouvre, vous autorisez l'accès, le token s'affiche dans le
-terminal. C'est la **seule** étape qui demande une interaction : ensuite tout est
-automatisable.
-
-> `google-auth-oauthlib` ne sert qu'à cette étape unique.
-> `fetch_ads_data.py` n'a lui aucune dépendance.
-
-Un refresh token est révoqué si le mot de passe du compte change, si l'accès est
-retiré, ou après 6 mois d'inutilisation. Il faudra alors refaire cette étape.
-
-### 2.3 Configurer
+### 2.2 Configurer
 
 ```bash
 cp scripts/config.example.json scripts/config.json
 ```
 
-Remplissez les cinq champs. Alternative sans fichier — des variables
-d'environnement `GOOGLE_ADS_DEVELOPER_TOKEN`, `GOOGLE_ADS_CLIENT_ID`,
+Renseignez les **quatre** champs que vous seul pouvez obtenir :
+`developer_token`, `client_id`, `client_secret`, `login_customer_id`.
+Le cinquième — `refresh_token` — est rempli automatiquement à l'étape suivante.
+
+Alternative sans fichier : les variables d'environnement
+`GOOGLE_ADS_DEVELOPER_TOKEN`, `GOOGLE_ADS_CLIENT_ID`,
 `GOOGLE_ADS_CLIENT_SECRET`, `GOOGLE_ADS_REFRESH_TOKEN`,
 `GOOGLE_ADS_LOGIN_CUSTOMER_ID`.
+
+### 2.3 Obtenir le refresh token
+
+```bash
+python scripts/get_refresh_token.py
+```
+
+Votre navigateur s'ouvre sur l'écran de consentement Google. Vous autorisez, et le
+script écrit le token directement dans `scripts/config.json`.
+
+Le token n'est **jamais affiché** : il ne passe donc pas par votre historique de
+terminal. Le script n'a aucune dépendance (le flux OAuth, PKCE compris, est
+implémenté sur la stdlib) — inutile d'installer `google-auth-oauthlib`.
+
+C'est la seule étape qui demande une interaction ; tout le reste est automatisable.
+
+> Si l'ID client OAuth est de type **Application Web** et non *Application de
+> bureau*, ajoutez-y `http://localhost:8080/` comme URI de redirection autorisée.
+> Si le port 8080 est occupé : `OAUTH_PORT=8081 python scripts/get_refresh_token.py`
+> (et déclarez ce port côté Google).
+
+Un refresh token est révoqué si le mot de passe du compte change, si l'accès est
+retiré, ou après 6 mois d'inutilisation. Relancez alors ce script.
+
+Si Google ne renvoie pas de refresh token, c'est que l'accès avait déjà été
+accordé : révoquez-le sur <https://myaccount.google.com/permissions> et relancez.
 
 ### 2.4 Récupérer
 
