@@ -66,15 +66,67 @@ RETRY_BACKOFF = 2.0  # secondes, doublé à chaque tentative
 # ── Configuration ────────────────────────────────────────────────────────────
 
 
-def load_config() -> dict:
-    """config.json en priorité, puis variables d'environnement."""
+def parse_simple_yaml(text: str) -> dict:
+    """
+    Lit un google-ads.yaml — le format de configuration standard des clients
+    Google Ads. Ces fichiers sont plats (`clé: valeur`), donc un analyseur
+    minimal suffit et évite d'imposer PyYAML.
+    """
+    out: dict = {}
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if ":" not in line:
+            continue
+        key, _, value = line.partition(":")
+        key = key.strip()
+        value = value.split(" #", 1)[0].strip().strip("\"'")
+        if key and value:
+            out[key] = value
+    return out
+
+
+def load_config_file(path: Path) -> dict:
+    if not path.exists():
+        die(f"Fichier de configuration introuvable : {path}")
+    text = path.read_text(encoding="utf-8")
+    if path.suffix.lower() in (".yaml", ".yml"):
+        return parse_simple_yaml(text)
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError as exc:
+        die(f"{path} est illisible (JSON invalide) : {exc}")
+
+
+def discover_config() -> Path | None:
+    """
+    Cherche une configuration dans l'ordre : scripts/config.json, puis les
+    emplacements conventionnels d'un google-ads.yaml.
+    """
+    candidates = [
+        SCRIPT_DIR / "config.json",
+        PROJECT_DIR / "google-ads.yaml",
+        Path.home() / "google-ads.yaml",
+    ]
+    for path in candidates:
+        if not path.exists():
+            continue
+        # Un fichier présent mais vide de credentials ne doit pas masquer
+        # un fichier suivant qui, lui, est renseigné.
+        data = load_config_file(path)
+        if any(str(data.get(k) or "").strip() for k in CONFIG_KEYS):
+            return path
+    return None
+
+
+def load_config(explicit: str | None = None) -> dict:
+    """Fichier de configuration en priorité, puis variables d'environnement."""
     cfg: dict = {}
-    cfg_path = SCRIPT_DIR / "config.json"
-    if cfg_path.exists():
-        try:
-            cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
-        except json.JSONDecodeError as exc:
-            die(f"scripts/config.json est illisible (JSON invalide) : {exc}")
+    path = Path(explicit) if explicit else discover_config()
+    if path:
+        cfg = load_config_file(path)
+        print(f"Configuration : {path}")
 
     for key in CONFIG_KEYS:
         if not cfg.get(key):
@@ -86,9 +138,10 @@ def load_config() -> dict:
     if missing:
         die(
             "Identifiants manquants : " + ", ".join(missing) + "\n\n"
-            "Créez scripts/config.json à partir de scripts/config.example.json,\n"
+            "Renseignez scripts/config.json (modèle : scripts/config.example.json),\n"
+            "ou passez --config vers un google-ads.yaml existant,\n"
             "ou exportez les variables GOOGLE_ADS_* correspondantes.\n"
-            "Le README détaille la procédure d'obtention du refresh token."
+            "Le README détaille l'obtention du refresh token."
         )
 
     # Les IDs Google Ads sont manipulés sans tirets côté API.
@@ -490,6 +543,12 @@ def parse_args() -> argparse.Namespace:
         "(défaut : tous les comptes actifs du MCC)",
     )
     parser.add_argument(
+        "--config",
+        help="Chemin d'un fichier de configuration (.json ou google-ads.yaml). "
+        "Par défaut : scripts/config.json, puis ./google-ads.yaml, "
+        "puis ~/google-ads.yaml, puis les variables GOOGLE_ADS_*",
+    )
+    parser.add_argument(
         "--out",
         default=str(PROJECT_DIR / "data" / "data.json"),
         help="Chemin du fichier de sortie (défaut : data/data.json)",
@@ -512,7 +571,7 @@ def resolve_dates(args: argparse.Namespace) -> tuple[str, str]:
 
 def main() -> int:
     args = parse_args()
-    cfg = load_config()
+    cfg = load_config(args.config)
     start, end = resolve_dates(args)
 
     print(f"\nPériode : {start} → {end}")
