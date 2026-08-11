@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+<html lang="fr" data-theme="auto">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Reporting Google Ads</title>
+<meta name="description" content="Reporting de performance Google Ads multi-comptes — interactif et filtrable.">
+<meta name="color-scheme" content="light dark">
+<link rel="stylesheet" href="assets/styles.css">
+</head>
+<body class="viz-root">
+
+<a class="skip-link" href="#contenu">Aller au contenu</a>
+
+<header class="page-header">
+  <div class="page-header__text">
+    <h1>Reporting Google Ads</h1>
+    <p class="page-header__meta" id="header-meta">Chargement…</p>
+  </div>
+  <div class="page-header__actions">
+    <button type="button" class="btn btn--icon" id="theme-toggle"
+            aria-label="Basculer le thème clair / sombre" title="Thème clair / sombre">
+      <span class="theme-toggle__glyph" aria-hidden="true"></span>
+    </button>
+  </div>
+</header>
+
+<!-- Une seule rangée de filtres, au-dessus de tout ce qu'elle cadre. -->
+<div class="filterbar" id="filterbar" role="search" aria-label="Filtres du rapport">
+  <div class="filterbar__inner">
+
+    <div class="filter">
+      <span class="filter__label" id="lbl-range">Période</span>
+      <div class="segmented" role="group" aria-labelledby="lbl-range" id="range-presets"></div>
+      <details class="dropdown dropdown--tight" id="range-custom-wrap">
+        <summary class="btn btn--ghost" title="Période personnalisée">Personnalisée</summary>
+        <div class="dropdown__panel dropdown__panel--form">
+          <label class="field">
+            <span>Du</span>
+            <input type="date" id="range-start">
+          </label>
+          <label class="field">
+            <span>Au</span>
+            <input type="date" id="range-end">
+          </label>
+          <div class="dropdown__footer">
+            <button type="button" class="btn btn--primary" id="range-apply">Appliquer</button>
+          </div>
+        </div>
+      </details>
+    </div>
+
+    <div class="filter">
+      <span class="filter__label" id="lbl-accounts">Comptes</span>
+      <details class="dropdown" id="account-dropdown">
+        <summary class="btn" aria-labelledby="lbl-accounts">
+          <span id="account-summary">Tous les comptes</span>
+          <span class="btn__caret" aria-hidden="true"></span>
+        </summary>
+        <div class="dropdown__panel" id="account-panel"></div>
+      </details>
+    </div>
+
+    <div class="filter">
+      <span class="filter__label" id="lbl-device">Appareil</span>
+      <details class="dropdown">
+        <summary class="btn" aria-labelledby="lbl-device">
+          <span id="device-summary">Tous</span>
+          <span class="btn__caret" aria-hidden="true"></span>
+        </summary>
+        <div class="dropdown__panel" id="device-panel"></div>
+      </details>
+    </div>
+
+    <div class="filter">
+      <span class="filter__label" id="lbl-network">Réseau</span>
+      <details class="dropdown">
+        <summary class="btn" aria-labelledby="lbl-network">
+          <span id="network-summary">Tous</span>
+          <span class="btn__caret" aria-hidden="true"></span>
+        </summary>
+        <div class="dropdown__panel" id="network-panel"></div>
+      </details>
+    </div>
+
+    <div class="filter filter--grow">
+      <label class="filter__label" for="campaign-search">Campagne</label>
+      <input type="search" id="campaign-search" class="input" placeholder="Filtrer par nom…"
+             autocomplete="off" spellcheck="false">
+    </div>
+
+    <button type="button" class="btn btn--ghost filter__reset" id="filter-reset">Réinitialiser</button>
+  </div>
+  <p class="filterbar__status" id="filter-status" role="status" aria-live="polite"></p>
+</div>
+
+<main id="contenu">
+
+  <div class="banner banner--warn" id="banner-demo" hidden>
+    <strong>Données de démonstration.</strong>
+    <span>Ce rapport affiche un jeu de données simulé. Lancez
+      <code>python scripts/fetch_ads_data.py</code> pour le remplacer par vos performances réelles.</span>
+  </div>
+  <div class="banner banner--warn" id="banner-currency" hidden></div>
+  <div class="banner banner--warn" id="banner-failed" hidden></div>
+  <div class="banner banner--error" id="banner-error" hidden></div>
+
+  <!-- ── Indicateurs clés ─────────────────────────────────────────────── -->
+  <section class="section" aria-labelledby="h-kpi">
+    <div class="section__head">
+      <h2 id="h-kpi">Indicateurs clés</h2>
+      <p class="section__sub" id="kpi-compare"></p>
+    </div>
+    <div class="kpi-grid" id="kpi-grid"></div>
+  </section>
+
+  <!-- ── Évolution ────────────────────────────────────────────────────── -->
+  <section class="section" aria-labelledby="h-ts">
+    <article class="card card--wide">
+      <div class="card__head">
+        <div>
+          <h2 class="card__title" id="h-ts">Évolution dans le temps</h2>
+          <p class="card__sub" id="ts-sub"></p>
+        </div>
+        <div class="card__tools">
+          <label class="select-wrap">
+            <span class="sr-only">Indicateur affiché</span>
+            <select id="ts-metric" class="select"></select>
+          </label>
+          <div class="segmented segmented--sm" role="group" aria-label="Granularité" id="ts-grain"></div>
+          <div class="segmented segmented--sm" role="group" aria-label="Découpage" id="ts-mode"></div>
+          <div class="segmented segmented--sm viewtoggle" role="group" aria-label="Type d'affichage"
+               data-view-for="ts"></div>
+        </div>
+      </div>
+      <div class="card__body" id="ts-body"></div>
+    </article>
+  </section>
+
+  <!-- ── Coût vs valeur ───────────────────────────────────────────────── -->
+  <section class="section grid-2" aria-labelledby="h-roi">
+    <article class="card">
+      <div class="card__head">
+        <div>
+          <h2 class="card__title" id="h-roi">Coût et valeur de conversion</h2>
+          <p class="card__sub" id="roi-sub">Deux montants, une même échelle monétaire.</p>
+        </div>
+        <div class="card__tools">
+          <div class="segmented segmented--sm viewtoggle" role="group" aria-label="Type d'affichage"
+               data-view-for="roi"></div>
+        </div>
+      </div>
+      <div class="card__body" id="roi-body"></div>
+    </article>
+
+    <article class="card">
+      <div class="card__head">
+        <div>
+          <h2 class="card__title" id="h-eff">Efficacité des campagnes</h2>
+          <p class="card__sub">Coût investi face aux conversions obtenues. Chaque point est une campagne.</p>
+        </div>
+        <div class="card__tools">
+          <div class="segmented segmented--sm viewtoggle" role="group" aria-label="Type d'affichage"
+               data-view-for="eff"></div>
+        </div>
+      </div>
+      <div class="card__body" id="eff-body"></div>
+    </article>
+  </section>
+
+  <!-- ── Classements ──────────────────────────────────────────────────── -->
+  <section class="section grid-2" aria-labelledby="h-top">
+    <article class="card">
+      <div class="card__head">
+        <div>
+          <h2 class="card__title" id="h-top">Principales campagnes</h2>
+          <p class="card__sub" id="top-sub"></p>
+        </div>
+        <div class="card__tools">
+          <label class="select-wrap">
+            <span class="sr-only">Classer par</span>
+            <select id="top-metric" class="select"></select>
+          </label>
+          <div class="segmented segmented--sm viewtoggle" role="group" aria-label="Type d'affichage"
+               data-view-for="top"></div>
+        </div>
+      </div>
+      <div class="card__body" id="top-body"></div>
+    </article>
+
+    <article class="card">
+      <div class="card__head">
+        <div>
+          <h2 class="card__title" id="h-mix">Répartition du coût par compte</h2>
+          <p class="card__sub" id="mix-sub"></p>
+        </div>
+        <div class="card__tools">
+          <div class="segmented segmented--sm" role="group" aria-label="Dimension" id="mix-dim"></div>
+          <div class="segmented segmented--sm viewtoggle" role="group" aria-label="Type d'affichage"
+               data-view-for="mix"></div>
+        </div>
+      </div>
+      <div class="card__body" id="mix-body"></div>
+    </article>
+  </section>
+
+  <!-- ── Tableau détaillé ─────────────────────────────────────────────── -->
+  <section class="section" aria-labelledby="h-detail">
+    <article class="card card--wide">
+      <div class="card__head">
+        <div>
+          <h2 class="card__title" id="h-detail">Détail par campagne</h2>
+          <p class="card__sub" id="detail-sub"></p>
+        </div>
+        <div class="card__tools">
+          <button type="button" class="btn btn--ghost" id="export-csv">Exporter en CSV</button>
+        </div>
+      </div>
+      <div class="card__body card__body--flush" id="detail-body"></div>
+    </article>
+  </section>
+
+</main>
+
+<footer class="page-footer">
+  <p id="footer-meta"></p>
+  <p class="page-footer__note">
+    Tous les graphiques proposent une vue tableau équivalente. Les montants suivent la devise
+    indiquée dans l'en-tête.
+  </p>
+</footer>
+
+<div class="tooltip" id="tooltip" role="tooltip" aria-hidden="true"></div>
+
+<script src="assets/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,6 @@
+# Fins de ligne normalisées en LF dans le dépôt. Sans cela, le script bash du
+# workflow GitHub Actions peut arriver en CRLF sur un runner Linux et échouer.
+* text=auto eol=lf
+
+*.png binary
+*.jpg binary

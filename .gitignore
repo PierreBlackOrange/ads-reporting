@@ -1,0 +1,20 @@
+# ── Credentials — ne JAMAIS commiter ────────────────────────────────────────
+# Ce repo est public : tout secret poussé ici est compromis définitivement.
+scripts/config.json
+*.env
+.env
+google-ads.yaml
+*credentials*.json
+*client_secret*.json
+*token*.json
+
+# ── Python ──────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# ── Système ─────────────────────────────────────────────────────────────────
+Thumbs.db
+desktop.ini
+.DS_Store

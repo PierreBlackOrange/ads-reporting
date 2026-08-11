@@ -1,0 +1,13 @@
+{
+  "_comment": "Copiez ce fichier en scripts/config.json puis remplissez-le. config.json est gitignoré et ne doit JAMAIS être commité.",
+
+  "developer_token": "VOTRE_DEVELOPER_TOKEN",
+  "client_id": "xxxxxxxxxxxx.apps.googleusercontent.com",
+  "client_secret": "GOCSPX-xxxxxxxxxxxxxxxx",
+  "refresh_token": "1//xxxxxxxxxxxxxxxxxxxx",
+  "login_customer_id": "1234567890",
+
+  "_comment_devises": "Optionnel. Uniquement si vos comptes MCC utilisent des devises différentes. Sans cela, les totaux inter-comptes additionnent des devises distinctes et sont faux. currency_rates = taux vers report_currency.",
+  "report_currency": null,
+  "currency_rates": {}
+}
