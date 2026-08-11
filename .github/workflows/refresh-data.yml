@@ -39,16 +39,22 @@ jobs:
         with:
           python-version: '3.12'
 
+      # Sans secrets, le job s'abstient au lieu d'échouer : un workflow planifié
+      # qui échoue enverrait un mail d'échec par jour jusqu'à leur ajout.
       - name: Vérifier que les secrets sont présents
+        id: check
         env:
           TOKEN: ${{ secrets.GOOGLE_ADS_DEVELOPER_TOKEN }}
         run: |
           if [ -z "$TOKEN" ]; then
-            echo "::error::Secrets Google Ads absents — voir le README, section 3.4."
-            exit 1
+            echo "::notice::Secrets Google Ads absents — rafraîchissement ignoré. Voir le README, section 3.4."
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=true" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Récupérer les performances
+        if: steps.check.outputs.ready == 'true'
         env:
           GOOGLE_ADS_DEVELOPER_TOKEN:   ${{ secrets.GOOGLE_ADS_DEVELOPER_TOKEN }}
           GOOGLE_ADS_CLIENT_ID:         ${{ secrets.GOOGLE_ADS_CLIENT_ID }}
@@ -58,6 +64,7 @@ jobs:
         run: python scripts/fetch_ads_data.py --days "${{ github.event.inputs.days || '180' }}"
 
       - name: Commiter si les données ont changé
+        if: steps.check.outputs.ready == 'true'
         run: |
           if git diff --quiet -- data/data.json; then
             echo "Aucun changement."
