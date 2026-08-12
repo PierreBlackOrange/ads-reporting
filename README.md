@@ -249,14 +249,25 @@ sont des tables d'index, et `facts` un tableau de tuples
 [date, campagne, appareil, réseau, impressions, clics, coût, conversions, valeur]
 ```
 
-Ce format tient 180 jours × 31 campagnes en ~780 Ko, ce qui se charge d'un coup
-et se filtre en mémoire sans requête réseau. Au-delà de ~2 Mo (plusieurs
-centaines de campagnes sur un an), réduisez la fenêtre avec `--days` ou scindez
-par MCC.
+Mesuré sur un MCC de 86 comptes : 180 jours × 165 campagnes tiennent en ~1,5 Mo,
+soit 47 000 lignes — chargées d'un coup et filtrées en mémoire, sans requête
+réseau. Au-delà de ~3 Mo, réduisez la fenêtre avec `--days` ou scindez par MCC.
 
-Les couleurs suivent l'entité, pas son rang : un compte garde sa teinte quels que
-soient les filtres. Au-delà de 7 comptes, la queue est repliée sur « Autres »
-plutôt que de recycler des teintes indistinguables.
+Les 7 teintes vont aux comptes qui pèsent le plus, classés sur le coût de
+**l'ensemble du jeu de données** — une propriété fixe du fichier, jamais de la
+sélection courante. Filtrer ne repeint donc aucune série, mais les couleurs
+restent alignées sur ce qui compte. Un classement alphabétique donnerait les
+teintes aux premiers comptes de la liste, souvent dormants. Le reste est replié
+sur « Autres » plutôt que de recycler des teintes indistinguables.
 
-L'API Google Ads est appelée en `v21`. Si Google sunsette cette version, changez
-la constante `API_VERSION` en tête de `scripts/fetch_ads_data.py`.
+### Version de l'API
+
+L'API est appelée en `v25` (constante `API_VERSION` en tête de
+`scripts/fetch_ads_data.py`). Google **bloque** les versions dépréciées — `v20`
+et `v21` le sont depuis août 2026 — avec l'erreur `UNSUPPORTED_VERSION`, souvent
+de façon intermittente pendant le déploiement du blocage. Le script s'arrête
+alors immédiatement en le disant, au lieu de parcourir tous les comptes.
+
+Pour trouver les versions acceptées, faites varier le numéro sur une requête
+triviale : une version retirée répond `UNSUPPORTED_VERSION`, une version
+inexistante répond `404`.

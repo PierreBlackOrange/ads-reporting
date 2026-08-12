@@ -616,10 +616,13 @@ function renderLineChart(container, cfg) {
       xLabels[i], svg);
     drawn.push(i);
   }
-  // La dernière borne n'est ajoutée que si elle ne vient pas heurter la précédente.
+  // La dernière borne n'est ajoutée que si elle ne heurte pas la précédente.
+  // Elle est alignée à droite (donc étendue vers la gauche sur toute sa largeur)
+  // alors que les autres sont centrées : il faut la demi-largeur de la
+  // précédente plus la largeur entière de celle-ci, soit 1,5 largeur.
   const lastIdx = xLabels.length - 1;
   const lastDrawn = drawn[drawn.length - 1];
-  if (lastDrawn !== lastIdx && x(lastIdx) - x(lastDrawn) >= xLabelW * 0.85) {
+  if (lastDrawn !== lastIdx && x(lastIdx) - x(lastDrawn) >= xLabelW * 1.5) {
     textNode('text', {
       class: 'axis-label', x: x(lastIdx), y: padT + plotH + 17, 'text-anchor': 'end',
     }, xLabels[lastIdx], svg);
