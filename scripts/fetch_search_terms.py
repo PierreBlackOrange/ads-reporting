@@ -143,6 +143,12 @@ def main() -> int:
     parser.add_argument("--max-pairs", type=int, default=3000,
                         help="Plafond de paires terme/mot-clé publiées, par coût "
                              "décroissant (défaut : 3000)")
+    parser.add_argument("--min-clicks", type=int, default=0,
+                        help="Ne récupérer que les lignes strictement au-dessus de ce "
+                             "nombre de clics (défaut : 0). ATTENTION : au-delà de 0 le "
+                             "filtre exclut de la dépense réelle — un terme à 1 clic "
+                             "coûte de l'argent. Le coût exclu est mesuré et inscrit "
+                             "dans meta.excluded_cost.")
     parser.add_argument("--config", help="Chemin d'un config.json ou google-ads.yaml")
     parser.add_argument("--accounts", help="IDs clients séparés par des virgules")
     parser.add_argument("--out", default=str(PROJECT_DIR / "data" / "terms.json"))
@@ -180,6 +186,11 @@ def main() -> int:
 
     failures: list[tuple[str, str]] = []
     raw_rows = 0
+    # Un seuil au-dessus de 0 exclut de la dépense réelle. On récupère donc
+    # toujours à clics > 0 et on filtre ici, ce qui permet de chiffrer
+    # exactement l'exclusion au lieu de l'estimer.
+    excluded_cost = 0.0
+    excluded_rows = 0
 
     for i, account in enumerate(accounts, 1):
         label = f"{account['name']} ({F.fmt_cid(account['id'])})"
@@ -219,6 +230,12 @@ def main() -> int:
             cost = int(met.get("costMicros") or 0) / 1_000_000
             clicks = F.to_int(met.get("clicks"))
             impr = F.to_int(met.get("impressions"))
+
+            if clicks <= args.min_clicks:
+                excluded_cost += cost
+                excluded_rows += 1
+                continue
+
             conv = F.to_float(met.get("conversions"))
             value = F.to_float(met.get("conversionsValue"))
 
@@ -325,6 +342,9 @@ def main() -> int:
             "ngrams_total": len(ngrams),
             "ngrams_published": len(ng_rows),
             "min_clicks_ngram": MIN_CLICKS,
+            "min_clicks": args.min_clicks,
+            "excluded_rows": excluded_rows,
+            "excluded_cost": round(excluded_cost, 2),
         },
         "accounts": acc_idx.values,
         "matchTypes": [MATCH_LABELS.get(m, m) for m in match_idx.values],
@@ -346,6 +366,12 @@ def main() -> int:
 
     print(f"\nÉcrit : {out}  ({out.stat().st_size / 1024:,.0f} Ko)")
     print(f"  {raw_rows:,} lignes brutes → {len(pairs):,} paires uniques")
+    if args.min_clicks > 0:
+        grand = total_cost + excluded_cost
+        share = (excluded_cost / grand * 100) if grand else 0.0
+        print(f"  seuil clics > {args.min_clicks} : {excluded_rows:,} lignes écartées, "
+              f"soit {excluded_cost:,.0f} de dépense ({share:.1f} % du total "
+              f"des termes cliqués) — cette dépense n'apparaît nulle part dans le rapport")
     print(f"  {len(out_pairs):,} paires publiées = {coverage:.1f} % du coût "
           f"({kept_cost:,.0f} / {total_cost:,.0f} {dataset['meta']['currency']})")
     print(f"  {len(ng_rows):,} n-grammes publiés sur {len(ngrams):,} observés")

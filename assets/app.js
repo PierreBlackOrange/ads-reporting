@@ -2230,13 +2230,33 @@ function renderTermsSection() {
   const t = S.terms;
 
   const cov = t.meta.cost_coverage_pct;
+  const scope = t.accounts.length === 1
+    ? t.accounts[0]
+    : `${t.accounts.length} comptes`;
   els.semMeta.textContent =
-    `${t.meta.pairs_published.toLocaleString('fr-CH')} paires publiées sur `
-    + `${t.meta.pairs_total.toLocaleString('fr-CH')} · ${cov} % de la dépense · `
+    `${scope} · ${t.meta.pairs_published.toLocaleString('fr-CH')} paires publiées sur `
+    + `${t.meta.pairs_total.toLocaleString('fr-CH')} · ${cov} % de la dépense retenue · `
     + `${fmtDateLong(t.meta.date_start)} – ${fmtDateLong(t.meta.date_end)}`;
 
-  // Deux limites que le lecteur ne peut pas deviner et qui changent la lecture.
+  // Limites que le lecteur ne peut pas deviner et qui changent la lecture.
   const notes = [];
+
+  // À signaler en premier : un seuil de clics écarte de la dépense réelle en
+  // amont, si bien qu'un taux de couverture élevé porterait à confusion — il
+  // porte sur ce qui reste après le seuil, pas sur la dépense totale.
+  const minClicks = t.meta.min_clicks || 0;
+  if (minClicks > 0 && t.meta.excluded_cost > 0) {
+    const grand = t.meta.cost_total + t.meta.excluded_cost;
+    const pct = grand ? (t.meta.excluded_cost / grand * 100) : 0;
+    notes.push(
+      `Seuil appliqué à la source : seuls les termes de plus de ${minClicks} clic`
+      + `${minClicks > 1 ? 's' : ''} sont récupérés. Cela écarte `
+      + `${compactly(fmtMoney, t.meta.excluded_cost)} de dépense réelle `
+      + `(${pct.toFixed(1)} % des termes cliqués), qui n'apparaît nulle part ici. `
+      + `Les ${cov} % ci-dessous portent sur ce qui reste après ce seuil, pas sur la dépense totale.`
+    );
+  }
+
   if (cov < 95) {
     notes.push(
       `Les ${t.meta.pairs_published.toLocaleString('fr-CH')} paires les plus coûteuses `
