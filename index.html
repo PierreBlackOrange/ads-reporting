@@ -18,12 +18,81 @@
     <p class="page-header__meta" id="header-meta">Chargement…</p>
   </div>
   <div class="page-header__actions">
+    <div class="segmented" role="tablist" aria-label="Vue" id="view-tabs"></div>
     <button type="button" class="btn btn--icon" id="theme-toggle"
             aria-label="Basculer le thème clair / sombre" title="Thème clair / sombre">
       <span class="theme-toggle__glyph" aria-hidden="true"></span>
     </button>
   </div>
 </header>
+
+<!-- ── Onglet Live ────────────────────────────────────────────────────────── -->
+<main id="view-live" hidden>
+  <div class="banner banner--error" id="live-error" hidden></div>
+  <div class="banner banner--warn" id="live-tz" hidden></div>
+
+  <div id="live-alert-slot"></div>
+
+  <section class="section" aria-labelledby="h-live-kpi">
+    <div class="section__head">
+      <h2 id="h-live-kpi">Aujourd'hui, à heure égale</h2>
+      <p class="section__sub" id="live-meta"></p>
+    </div>
+    <div class="kpi-grid" id="live-kpi"></div>
+  </section>
+
+  <section class="section" aria-labelledby="h-live-hourly">
+    <article class="card card--wide">
+      <div class="card__head">
+        <div>
+          <h3 class="card__title" id="h-live-hourly">Heure par heure</h3>
+          <p class="card__sub" id="live-hourly-sub"></p>
+        </div>
+        <div class="card__tools">
+          <label class="select-wrap">
+            <span class="sr-only">Mesure</span>
+            <select id="live-metric" class="select"></select>
+          </label>
+          <div class="segmented segmented--sm" role="group" aria-label="Cumul"
+               id="live-cumul"></div>
+          <div class="segmented segmented--sm viewtoggle" role="group"
+               aria-label="Type d'affichage" data-view-for="livehourly"></div>
+        </div>
+      </div>
+      <div class="card__body" id="live-hourly-body"></div>
+    </article>
+  </section>
+
+  <div class="grid-2">
+    <article class="card">
+      <div class="card__head">
+        <div>
+          <h3 class="card__title" id="h-live-actions">Conversions par action</h3>
+          <p class="card__sub" id="live-actions-sub"></p>
+        </div>
+        <div class="card__tools">
+          <div class="segmented segmented--sm viewtoggle" role="group"
+               aria-label="Type d'affichage" data-view-for="liveactions"></div>
+        </div>
+      </div>
+      <div class="card__body" id="live-actions-body"></div>
+    </article>
+
+    <article class="card">
+      <div class="card__head">
+        <div>
+          <h3 class="card__title" id="h-live-camp">Plus gros écarts de dépense</h3>
+          <p class="card__sub" id="live-camp-sub"></p>
+        </div>
+        <div class="card__tools">
+          <div class="segmented segmented--sm viewtoggle" role="group"
+               aria-label="Type d'affichage" data-view-for="livecamp"></div>
+        </div>
+      </div>
+      <div class="card__body" id="live-camp-body"></div>
+    </article>
+  </div>
+</main>
 
 <!-- Une seule rangée de filtres, au-dessus de tout ce qu'elle cadre. -->
 <div class="filterbar" id="filterbar" role="search" aria-label="Filtres du rapport">
@@ -94,7 +163,7 @@
   <p class="filterbar__status" id="filter-status" role="status" aria-live="polite"></p>
 </div>
 
-<main id="contenu">
+<main id="contenu" data-view="report">
 
   <div class="banner banner--warn" id="banner-demo" hidden>
     <strong>Données de démonstration.</strong>

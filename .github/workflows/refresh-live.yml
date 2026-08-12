@@ -1,0 +1,84 @@
+# Rafraîchit data/live.json pour l'onglet Live.
+#
+# Même prérequis de secrets que refresh-data.yml (section 3.4 du README) :
+#   GOOGLE_ADS_DEVELOPER_TOKEN, GOOGLE_ADS_CLIENT_ID, GOOGLE_ADS_CLIENT_SECRET,
+#   GOOGLE_ADS_REFRESH_TOKEN, GOOGLE_ADS_LOGIN_CUSTOMER_ID
+#
+# CE QUE « LIVE » VEUT DIRE ICI
+# ----------------------------
+# GitHub Pages sert un fichier statique : chaque rafraîchissement demande un
+# commit puis un redéploiement. La fraîcheur réelle est donc de l'ordre de
+# 15 à 30 minutes, pas de la seconde :
+#   - la granularité minimale d'un cron GitHub Actions est de 5 minutes, et les
+#     déclenchements sont fréquemment retardés de 5 à 15 minutes en charge ;
+#   - le redéploiement de Pages ajoute une à deux minutes.
+# L'interface affiche l'heure d'arrêt des données et la passe en rouge au-delà
+# de 45 minutes, pour qu'un tableau figé ne soit jamais pris pour un tableau à
+# jour. Pour du vrai temps réel, il faut un hébergement dynamique.
+
+name: Rafraîchir les données du jour
+
+on:
+  schedule:
+    # Toutes les 15 minutes de 6h à 23h heure de Paris (UTC+2 en été), plage où
+    # les comptes diffusent. Inutile de payer des exécutions la nuit.
+    - cron: '*/15 4-21 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: refresh-live
+  cancel-in-progress: true
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Vérifier que les secrets sont présents
+        id: check
+        env:
+          TOKEN: ${{ secrets.GOOGLE_ADS_DEVELOPER_TOKEN }}
+        run: |
+          if [ -z "$TOKEN" ]; then
+            echo "::notice::Secrets Google Ads absents — rafraîchissement ignoré."
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Récupérer la journée en cours
+        if: steps.check.outputs.ready == 'true'
+        env:
+          GOOGLE_ADS_DEVELOPER_TOKEN:   ${{ secrets.GOOGLE_ADS_DEVELOPER_TOKEN }}
+          GOOGLE_ADS_CLIENT_ID:         ${{ secrets.GOOGLE_ADS_CLIENT_ID }}
+          GOOGLE_ADS_CLIENT_SECRET:     ${{ secrets.GOOGLE_ADS_CLIENT_SECRET }}
+          GOOGLE_ADS_REFRESH_TOKEN:     ${{ secrets.GOOGLE_ADS_REFRESH_TOKEN }}
+          GOOGLE_ADS_LOGIN_CUSTOMER_ID: ${{ secrets.GOOGLE_ADS_LOGIN_CUSTOMER_ID }}
+          # Les cinq comptes suivis. Vider la variable pour prendre tout le MCC.
+          LIVE_ACCOUNTS: '3384610932,9875320091,5252527523,5169306401,1031216935'
+        run: |
+          python scripts/fetch_live.py ${LIVE_ACCOUNTS:+--accounts "$LIVE_ACCOUNTS"}
+
+      - name: Commiter si les données ont changé
+        if: steps.check.outputs.ready == 'true'
+        run: |
+          if git diff --quiet -- data/live.json; then
+            echo "Aucun changement."
+            exit 0
+          fi
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data/live.json
+          # Un rebase avant push : deux exécutions rapprochées, ou le workflow
+          # quotidien, peuvent avoir avancé la branche entre-temps.
+          git commit -m "Données du jour $(date -u +%H:%M) UTC"
+          git pull --rebase --autostash origin main
+          git push

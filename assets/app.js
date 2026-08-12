@@ -648,6 +648,19 @@ function renderLineChart(container, cfg) {
     }, xLabels[lastIdx], svg);
   }
 
+  // Repère vertical : marque une frontière sur l'axe des abscisses (fin de la
+  // zone consolidée, par exemple). Trait plein teinté et étiqueté — sans
+  // étiquette, un lecteur ne peut pas deviner ce qu'il sépare.
+  if (cfg.vmark && cfg.vmark.at >= 0 && cfg.vmark.at < xLabels.length) {
+    const vx = x(cfg.vmark.at);
+    el('line', {
+      class: 'threshold-line', x1: vx, x2: vx, y1: padT, y2: padT + plotH,
+    }, svg);
+    textNode('text', {
+      class: 'threshold-label', x: vx + 5, y: padT + 10, 'text-anchor': 'start',
+    }, cfg.vmark.label || '', svg);
+  }
+
   // Lavis d'aire à ~10 % : un voile, jamais un bloc saturé.
   if (area && series.length === 1) {
     const s = series[0];
@@ -922,6 +935,11 @@ function renderBarChart(container, cfg) {
 function renderStackedBars(container, cfg) {
   const { rows, series, fmt } = cfg;
   const normalize = !!cfg.normalize;
+  // Mode groupé : chaque série a sa propre barre dans la ligne, au lieu d'être
+  // empilée. Obligatoire quand les séries sont des alternatives et non des
+  // parts d'un tout — empiler « aujourd'hui » et « la semaine dernière »
+  // afficherait une somme qui ne veut rien dire.
+  const grouped = !!cfg.grouped;
   container.replaceChildren();
   if (!rows.length || !series.length) {
     emptyState(container, 'Aucune donnée sur cette sélection.');
@@ -935,8 +953,11 @@ function renderStackedBars(container, cfg) {
   container.appendChild(wrap);
 
   const W = measureWidth(container);
-  const rowH = 34;
-  const barH = Math.min(24, rowH - 10);
+  // En groupé, la ligne doit loger une barre par série sans les écraser.
+  const rowH = grouped ? Math.max(30, 12 + series.length * 13) : 34;
+  const barH = grouped
+    ? Math.max(8, Math.floor((rowH - 12) / series.length) - 2)
+    : Math.min(24, rowH - 10);
   const padT = 6;
   const H = rows.length * rowH + padT + 6;
 
@@ -949,7 +970,11 @@ function renderStackedBars(container, cfg) {
   const maxLabel = Math.min(LABEL_MAX, Math.max(...rows.map((r) => shorten(r.label).length)));
   const padL = Math.min(220, Math.max(90, maxLabel * 6.6));
   const totals = rows.map((r) => series.reduce((a, s) => a + (r.values[s.key] || 0), 0));
-  const maxTotal = Math.max(...totals, 1);
+  // En groupé l'échelle est celle de la plus grande valeur unitaire, pas de la
+  // somme : sinon toutes les barres seraient écrasées de moitié.
+  const maxTotal = grouped
+    ? Math.max(...rows.flatMap((r) => series.map((s) => r.values[s.key] || 0)), 1)
+    : Math.max(...totals, 1);
   const axisFmt = axisFormatter(fmt, maxTotal);
   const padR = Math.max(...totals.map((t) => axisFmt(t).length)) * 6.9 + 16;
   const plotW = Math.max(40, W - padL - Math.min(150, padR));
@@ -962,12 +987,53 @@ function renderStackedBars(container, cfg) {
   const GAP = 2;   // 2px de surface entre segments : c'est le blanc qui sépare
 
   rows.forEach((r, ri) => {
-    const yTop = padT + ri * rowH + (rowH - barH) / 2;
+    const rowTop = padT + ri * rowH;
+    const groupH = grouped ? series.length * (barH + 2) - 2 : barH;
+    const yTop = rowTop + (rowH - groupH) / 2;
     const total = totals[ri];
     const short = shorten(r.label);
     textNode('text', {
-      class: 'axis-label', x: padL - 10, y: yTop + barH / 2 + 3.5, 'text-anchor': 'end',
+      class: 'axis-label', x: padL - 10, y: rowTop + rowH / 2 + 3.5, 'text-anchor': 'end',
     }, short, svg);
+
+    if (grouped) {
+      series.forEach((s, si) => {
+        const v = r.values[s.key] || 0;
+        const w = (v / maxTotal) * plotW;
+        const y = yTop + si * (barH + 2);
+        const seg = el('path', {
+          class: 'bar-mark', d: barPath(padL, y, w, barH, 3, 'h'), fill: s.color,
+        }, svg);
+        textNode('text', {
+          class: 'mark-label', x: padL + w + 7, y: y + barH / 2 + 3.5,
+          'text-anchor': 'start', 'font-size': 10,
+        }, axisFmt(v), svg);
+
+        const hit = el('rect', {
+          class: 'hit hit--mark', x: 0, y, width: W, height: Math.max(barH, 16),
+          tabindex: 0, role: 'button',
+          'aria-label': `${r.label}, ${s.name} — ${fmt(v)}`,
+        }, svg);
+        const show = (mx, my) => {
+          seg.classList.add('bar-mark--hover');
+          Tip.show(mx, my, (n) => {
+            tipHead(n, r.label);
+            for (const s2 of series) {
+              tipRow(n, { name: s2.name, value: fmt(r.values[s2.key] || 0), color: s2.color });
+            }
+          });
+        };
+        const hide = () => { seg.classList.remove('bar-mark--hover'); Tip.hide(); };
+        hit.addEventListener('pointermove', (ev) => show(ev.clientX, ev.clientY));
+        hit.addEventListener('pointerleave', hide);
+        hit.addEventListener('focus', () => {
+          const b = hit.getBoundingClientRect();
+          show(b.left + b.width / 2, b.top + b.height / 2);
+        });
+        hit.addEventListener('blur', hide);
+      });
+      return;
+    }
 
     const full = normalize ? plotW : (total / maxTotal) * plotW;
     const visible = series.filter((s) => (r.values[s.key] || 0) > 0);
@@ -3400,6 +3466,7 @@ function buildViewToggles() {
 
 function writeHash() {
   const p = new URLSearchParams();
+  if (S.view !== 'report') p.set('vue', S.view);
   p.set('r', S.range);
   if (S.range === 'custom') { p.set('s', S.start); p.set('e', S.end); }
   if (S.accounts.size) p.set('a', [...S.accounts].join(','));
@@ -3431,6 +3498,7 @@ function readHash() {
   const p = new URLSearchParams(raw);
   const nums = (v) => new Set((v || '').split(',').filter((s) => s !== '').map(Number).filter(Number.isInteger));
 
+  if (['report', 'live'].includes(p.get('vue'))) S.view = p.get('vue');
   const r = p.get('r');
   if (r) S.range = r;
   if (p.get('s')) S.start = p.get('s');
@@ -3506,6 +3574,432 @@ function doRender() {
   // La section sémantique suit le filtre de comptes, mais pas celui de période :
   // terms.json a sa propre fenêtre, annoncée dans son en-tête.
   if (S.termsState === 'ready') renderTermsSection();
+}
+
+/* ════════════════════════════════════════════════════════════════════════════
+   Onglet Live — la journée en cours face au même jour, semaine précédente
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+const LIVE_METRIC = {
+  cost: { label: 'Dépense', key: 'cost', fmt: fmtMoney, dir: 0 },
+  allconv: { label: 'Conversions (toutes)', key: 'allconv', fmt: fmtNum1, dir: 1 },
+  clicks: { label: 'Clics', key: 'clicks', fmt: fmtInt, dir: 1 },
+  impr: { label: 'Impressions', key: 'impr', fmt: fmtInt, dir: 0 },
+  value: { label: 'Valeur de conv.', key: 'value', fmt: fmtMoney, dir: 1 },
+};
+
+const LIVE_KPIS = [
+  { key: 'cost', label: 'Dépense', fmt: fmtMoney, dir: 0 },
+  { key: 'allconv', label: 'Conversions (toutes)', fmt: fmtNum1, dir: 1 },
+  { key: 'clicks', label: 'Clics', fmt: fmtInt, dir: 1 },
+  { key: 'impr', label: 'Impressions', fmt: fmtInt, dir: 0 },
+  { key: 'value', label: 'Valeur de conv.', fmt: fmtMoney, dir: 1 },
+];
+
+/* Au-delà de ce écart relatif, on met le changement en évidence. */
+const LIVE_HIGHLIGHT = 0.25;
+
+Object.assign(S, {
+  view: 'report',
+  live: null,
+  liveState: 'idle',
+  liveMetric: 'cost',
+  liveCumul: 'cumul',
+});
+
+function liveDelta(cur, ref) {
+  if (!isFinite(ref) || ref === 0) return null;
+  return (cur - ref) / Math.abs(ref);
+}
+
+/** Tuile d'indicateur : valeur du jour, écart à la référence, mise en évidence. */
+function liveTile(def, cur, ref) {
+  const tile = document.createElement('div');
+  tile.className = 'kpi';
+
+  const lab = document.createElement('div');
+  lab.className = 'kpi__label';
+  lab.textContent = def.label;
+  tile.appendChild(lab);
+
+  const val = document.createElement('div');
+  val.className = 'kpi__value';
+  val.textContent = compactly(def.fmt, cur);
+  tile.appendChild(val);
+
+  const foot = document.createElement('div');
+  foot.className = 'kpi__foot';
+
+  const pct = liveDelta(cur, ref);
+  const d = document.createElement('span');
+  if (pct === null) {
+    d.className = 'kpi__delta kpi__delta--flat';
+    d.textContent = '—';
+  } else {
+    const flat = Math.abs(pct) < 0.005;
+    const glyph = flat ? '=' : (pct > 0 ? '↑' : '↓');
+    // Une hausse de dépense n'est ni bonne ni mauvaise en soi : seul le sens
+    // déclaré par l'indicateur colore l'écart.
+    const good = def.dir === 0 || flat ? null : (pct > 0) === (def.dir > 0);
+    d.className = 'kpi__delta ' + (good === null ? 'kpi__delta--flat'
+      : good ? 'kpi__delta--good' : 'kpi__delta--bad');
+    const g = document.createElement('span');
+    g.textContent = glyph;
+    d.appendChild(g);
+    const t = document.createElement('span');
+    t.textContent = `${nf1.format(Math.abs(pct) * 100)} %`;
+    d.appendChild(t);
+    const em = document.createElement('em');
+    em.textContent = 'vs J-7';
+    d.appendChild(em);
+    if (Math.abs(pct) >= LIVE_HIGHLIGHT) {
+      // Un écart marquant se signale par le glyphe et le libellé, pas
+      // seulement par la couleur.
+      const strong = document.createElement('strong');
+      strong.textContent = '!';
+      strong.title = 'Écart marquant';
+      d.appendChild(strong);
+    }
+  }
+  d.title = `Référence à la même heure il y a 7 jours : ${def.fmt(ref)}`;
+  foot.appendChild(d);
+  tile.appendChild(foot);
+  return tile;
+}
+
+function renderLiveKpis() {
+  const L = S.live;
+  els.liveKpi.replaceChildren();
+  for (const def of LIVE_KPIS) {
+    const t = L.totals[def.key];
+    if (!t) continue;
+    els.liveKpi.appendChild(liveTile(def, t.today, t.ref));
+  }
+}
+
+function renderLiveHourly() {
+  const L = S.live;
+  const m = LIVE_METRIC[S.liveMetric];
+  const cumul = S.liveCumul === 'cumul';
+  const nowH = L.meta.current_hour;
+  const settled = L.meta.settled_through;
+
+  const shape = (arr, limit) => {
+    let acc = 0;
+    return arr.map((v, h) => {
+      acc += v;
+      // Au-delà de l'heure en cours il n'y a pas de donnée : couper plutôt que
+      // tracer un plateau, qui se lirait comme un arrêt de diffusion.
+      if (limit !== null && h > limit) return null;
+      return cumul ? acc : v;
+    });
+  };
+
+  const series = [
+    {
+      key: 'today', name: `Aujourd'hui`, color: seriesColor(1),
+      values: shape(L.today[m.key], nowH),
+    },
+    {
+      // La référence est coupée à l'heure courante elle aussi. Tracer la
+      // journée entière ferait comparer un jour partiel à un jour complet :
+      // le lecteur verrait un effondrement là où il n'y a qu'une heure moins
+      // avancée. La journée de référence complète reste dans la vue tableau.
+      key: 'ref', name: `Même jour, J-7`, color: seriesColor(2),
+      values: shape(L.reference[m.key], nowH),
+    },
+  ];
+
+  const isConv = m.key === 'allconv' || m.key === 'value';
+  els.liveHourlySub.textContent =
+    `${m.label} · ${cumul ? 'cumul depuis minuit' : 'par heure'} · `
+    + `${fmtDateLong(L.meta.date)} face au ${fmtDateLong(L.meta.reference_date)} · `
+    + `heure du compte (${L.meta.timezone})`
+    + (isConv && settled >= 0
+        ? ` · les heures après ${settled}h remontent encore, elles sous-estiment le réel`
+        : '');
+
+  if (S.views.livehourly === 'table') {
+    renderTable(els.liveHourlyBody, {
+      scroll: true,
+      caption: `${m.label} heure par heure`,
+      cols: [
+        { key: 'h', label: 'Heure', text: true },
+        { key: 'today', label: `Aujourd'hui`, fmt: (v) => (v === null ? '—' : m.fmt(v)) },
+        { key: 'ref', label: 'J-7', fmt: (v) => (v === null ? '—' : m.fmt(v)) },
+        { key: 'delta', label: 'Écart', fmt: (v) => (v === null ? '—' : `${v >= 0 ? '+' : '−'}${nf1.format(Math.abs(v))} %`) },
+        { key: 'state', label: 'État', text: true },
+      ],
+      // Le tableau garde la journée de référence entière, que le graphique
+      // coupe à l'heure courante : c'est ici qu'on va voir où la journée a fini.
+      rows: (() => {
+        const refFull = shape(L.reference[m.key], null);
+        return L.hours.map((h) => {
+        const a = series[0].values[h];
+        const b = refFull[h];
+        const pct = liveDelta(a === null ? 0 : a, b);
+        return {
+          h: `${String(h).padStart(2, '0')}h`,
+          today: a, ref: b,
+          delta: a === null || pct === null ? null : pct * 100,
+          state: h > nowH ? 'à venir'
+            : (isConv && settled >= 0 && h > settled) ? 'en consolidation' : 'consolidé',
+        };
+        });
+      })(),
+    });
+    return;
+  }
+
+  renderLineChart(els.liveHourlyBody, {
+    xLabels: L.hours.map((h) => `${String(h).padStart(2, '0')}h`),
+    xFull: L.hours.map((h) => `${String(h).padStart(2, '0')}h — heure du compte`),
+    series,
+    fmt: m.fmt,
+    endLabel: true,
+    height: 300,
+    summable: false,
+    // La frontière n'a de sens que pour les conversions : le coût, lui, remonte
+    // quasiment en temps réel.
+    vmark: (isConv && settled >= 0 && settled < nowH)
+      ? { at: settled, label: `consolidé jusqu'ici` } : null,
+    ariaLabel: `${m.label} heure par heure, aujourd'hui face à J-7`,
+  });
+}
+
+function renderLiveActions() {
+  const L = S.live;
+  const rows = (L.actions || []).filter((r) => r[1] > 0 || r[2] > 0);
+  els.liveActionsSub.textContent =
+    `Cumul jusqu'à ${L.meta.current_hour}h, face à la même heure J-7 · `
+    + `mesure « toutes conversions », qui remonte plus vite que la colonne de conversions`;
+
+  if (!rows.length) {
+    emptyState(els.liveActionsBody, 'Aucune conversion remontée aujourd\'hui.');
+    return;
+  }
+
+  if (S.views.liveactions === 'table') {
+    renderTable(els.liveActionsBody, {
+      scroll: true,
+      caption: 'Conversions par action',
+      cols: [
+        { key: 'name', label: 'Action de conversion', text: true },
+        { key: 'today', label: `Aujourd'hui`, fmt: fmtNum1 },
+        { key: 'ref', label: 'J-7', fmt: fmtNum1 },
+        { key: 'delta', label: 'Écart', fmt: (v) => (v === null ? '—' : `${v >= 0 ? '+' : '−'}${nf1.format(Math.abs(v))} %`) },
+      ],
+      rows: rows.map((r) => {
+        const pct = liveDelta(r[1], r[2]);
+        return { name: r[0], today: r[1], ref: r[2], delta: pct === null ? null : pct * 100 };
+      }),
+    });
+    return;
+  }
+
+  // Barres groupées jour / J-7 : deux séries, une échelle, comparaison directe.
+  // Barres groupées et non empilées : aujourd'hui et J-7 sont deux alternatives,
+  // pas les parts d'un tout — les empiler afficherait une somme dénuée de sens.
+  renderStackedBars(els.liveActionsBody, {
+    grouped: true,
+    rows: rows.slice(0, 10).map((r) => ({
+      label: r[0],
+      values: { today: r[1], ref: r[2] },
+      total: Math.max(r[1], r[2]),
+    })),
+    series: [
+      { key: 'today', name: `Aujourd'hui`, color: seriesColor(1) },
+      { key: 'ref', name: 'J-7 à la même heure', color: seriesColor(2) },
+    ],
+    fmt: fmtNum1,
+    ariaLabel: 'Conversions par action, aujourd\'hui et J-7',
+  });
+}
+
+function renderLiveCampaigns() {
+  const L = S.live;
+  const rows = (L.campaigns || []).map((r) => ({
+    name: r[0], account: r[1], today: r[2], ref: r[3],
+    conv: r[4], convRef: r[5], delta: r[2] - r[3],
+  }));
+
+  els.liveCampSub.textContent =
+    `Écart de dépense à heure égale, du plus grand au plus petit · `
+    + `au-delà de ${Math.round(LIVE_HIGHLIGHT * 100)} % d'écart relatif, le changement est signalé`;
+
+  if (!rows.length) {
+    emptyState(els.liveCampBody, 'Aucune dépense aujourd\'hui ni il y a 7 jours.');
+    return;
+  }
+
+  if (S.views.livecamp === 'table') {
+    renderTable(els.liveCampBody, {
+      scroll: true,
+      caption: 'Écarts de dépense par campagne',
+      cols: [
+        { key: 'name', label: 'Campagne', text: true },
+        { key: 'today', label: `Dépense auj.`, fmt: (v) => fmtMoney(v) },
+        { key: 'ref', label: 'J-7', fmt: (v) => fmtMoney(v) },
+        { key: 'delta', label: 'Écart', fmt: (v) => `${v >= 0 ? '+' : '−'}${fmtMoney(Math.abs(v))}` },
+        { key: 'conv', label: 'Conv. auj.', fmt: fmtNum1 },
+        { key: 'convRef', label: 'Conv. J-7', fmt: fmtNum1 },
+      ],
+      rows: rows.map((r) => ({ ...r, _sub: r.account })),
+    });
+    return;
+  }
+
+  renderDivergingBars(els.liveCampBody, {
+    rows: rows.slice(0, 14).map((r) => ({
+      label: r.name,
+      recent: r.today, prev: r.ref, delta: r.delta,
+      examples: [r.account],
+    })),
+    fmt: fmtMoney,
+    upLabel: 'Dépense en hausse', downLabel: 'Dépense en baisse',
+    ariaLabel: 'Écarts de dépense par campagne face à J-7',
+  });
+}
+
+function renderLiveAlert() {
+  const L = S.live;
+  const slot = els.liveAlertSlot;
+  slot.replaceChildren();
+
+  const a = L.alert;
+  const settled = L.meta.settled_through;
+  const box = document.createElement('div');
+
+  if (!a) {
+    if (settled < 0) {
+      box.className = 'alert-live';
+      const t = document.createElement('span');
+      t.className = 'alert-live__title';
+      t.textContent = 'Surveillance impossible pour l\'instant.';
+      box.appendChild(t);
+      const s = document.createElement('span');
+      s.textContent =
+        'Aucune heure n\'est encore consolidée : le volume de référence est trop '
+        + 'faible pour distinguer une absence de conversions d\'un simple retard de remontée.';
+      box.appendChild(s);
+      slot.appendChild(box);
+    }
+    return;
+  }
+
+  const critical = a.level === 'alerte';
+  box.className = 'alert-live' + (critical ? ' alert-live--critical' : '');
+  const title = document.createElement('span');
+  title.className = 'alert-live__title';
+  title.textContent = critical
+    ? `Alerte — aucune conversion sur la dernière heure consolidée (${a.hour}h).`
+    : `Vigilance — conversions en net retrait sur la dernière heure consolidée (${a.hour}h).`;
+  box.appendChild(title);
+
+  const detail = document.createElement('span');
+  detail.textContent = critical
+    ? `La même heure il y a 7 jours en comptait ${fmtNum1(a.reference)}. `
+      + `Les heures plus récentes ne sont pas évaluées : elles remontent encore.`
+    : `${fmtNum1(a.current)} contre ${fmtNum1(a.reference)} il y a 7 jours, `
+      + `soit ${nf1.format((1 - a.current / a.reference) * 100)} % de moins.`;
+  box.appendChild(detail);
+  slot.appendChild(box);
+}
+
+function renderLive() {
+  const L = S.live;
+  if (!L) return;
+
+  const gen = new Date(L.meta.generated_at);
+  const ageMin = Math.round((Date.now() - gen.getTime()) / 60000);
+  const stale = ageMin > 45;
+
+  els.liveMeta.replaceChildren();
+  const meta = document.createElement('span');
+  meta.textContent =
+    `${L.meta.accounts.length} compte(s) · cumul jusqu'à ${L.meta.current_hour}h `
+    + `(${L.meta.timezone}) · données arrêtées à `;
+  els.liveMeta.appendChild(meta);
+  const stamp = document.createElement('span');
+  if (stale) stamp.className = 'live-stale';
+  stamp.textContent = `${String(gen.getHours()).padStart(2, '0')}:`
+    + `${String(gen.getMinutes()).padStart(2, '0')}`
+    + (ageMin >= 1 ? ` (il y a ${ageMin} min)` : ' (à l\'instant)');
+  els.liveMeta.appendChild(stamp);
+
+  if (L.meta.timezone_warning) {
+    els.liveTz.replaceChildren();
+    const s = document.createElement('strong');
+    s.textContent = 'Fuseau horaire.';
+    els.liveTz.appendChild(s);
+    const d = document.createElement('span');
+    d.textContent = L.meta.timezone_warning;
+    els.liveTz.appendChild(d);
+    els.liveTz.hidden = false;
+  } else {
+    els.liveTz.hidden = true;
+  }
+
+  renderLiveAlert();
+  renderLiveKpis();
+  renderLiveHourly();
+  renderLiveActions();
+  renderLiveCampaigns();
+}
+
+async function loadLive() {
+  if (S.liveState === 'loading') return;
+  S.liveState = 'loading';
+  try {
+    const res = await fetch('data/live.json', { cache: 'no-store' });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    S.live = await res.json();
+  } catch (err) {
+    S.liveState = 'error';
+    els.liveError.replaceChildren();
+    const s = document.createElement('strong');
+    s.textContent = 'Données du jour indisponibles.';
+    els.liveError.appendChild(s);
+    const d = document.createElement('span');
+    d.textContent = `Impossible de charger data/live.json (${err.message}). `
+      + `Générez-le avec « python scripts/fetch_live.py ».`;
+    els.liveError.appendChild(d);
+    els.liveError.hidden = false;
+    return;
+  }
+  S.liveState = 'ready';
+  els.liveError.hidden = true;
+
+  fillSelectFrom(els.liveMetric, LIVE_METRIC, S.liveMetric);
+  els.liveMetric.addEventListener('change', () => {
+    S.liveMetric = els.liveMetric.value;
+    renderLive();
+  });
+  buildSegmented(els.liveCumul,
+    [{ key: 'cumul', label: 'Cumulé' }, { key: 'hour', label: 'Par heure' }],
+    () => S.liveCumul, (k) => { S.liveCumul = k; renderLive(); });
+  buildViewToggles();
+  renderLive();
+}
+
+/* ── Navigation entre vues ────────────────────────────────────────────────── */
+
+function setView(view) {
+  S.view = view;
+  els.contenu.hidden = view !== 'report';
+  els.viewLive.hidden = view !== 'live';
+  els.filterbar.hidden = view !== 'report';
+  for (const b of els.viewTabs.querySelectorAll('button')) {
+    const on = b.dataset.key === view;
+    b.setAttribute('aria-pressed', String(on));
+    b.setAttribute('aria-selected', String(on));
+  }
+  writeHash();
+  if (view === 'live' && S.liveState === 'idle') loadLive();
+  // Les SVG sont dimensionnés sur une largeur mesurée : un conteneur masqué
+  // mesure zéro, il faut redessiner en revenant sur la vue.
+  if (view === 'report') render();
+  else if (S.liveState === 'ready') renderLive();
 }
 
 /* ── Bandeaux & en-tête ───────────────────────────────────────────────────── */
@@ -3602,6 +4096,14 @@ function cacheEls() {
     cannibBody: 'cannib-body', cannibSub: 'cannib-sub', cannibMetric: 'cannib-metric',
     velocityBody: 'velocity-body', velocitySub: 'velocity-sub', velocityBid: 'velocity-bid',
     marginalBody: 'marginal-body', marginalSub: 'marginal-sub',
+    contenu: 'contenu', viewLive: 'view-live', viewTabs: 'view-tabs',
+    filterbar: 'filterbar',
+    liveError: 'live-error', liveTz: 'live-tz', liveAlertSlot: 'live-alert-slot',
+    liveMeta: 'live-meta', liveKpi: 'live-kpi',
+    liveHourlyBody: 'live-hourly-body', liveHourlySub: 'live-hourly-sub',
+    liveMetric: 'live-metric', liveCumul: 'live-cumul',
+    liveActionsBody: 'live-actions-body', liveActionsSub: 'live-actions-sub',
+    liveCampBody: 'live-camp-body', liveCampSub: 'live-camp-sub',
   };
   for (const k in ids) els[k] = document.getElementById(ids[k]);
 }
@@ -3619,6 +4121,10 @@ function showFatal(message) {
 }
 
 function wireControls() {
+  buildSegmented(els.viewTabs,
+    [{ key: 'report', label: 'Rapport' }, { key: 'live', label: 'Live' }],
+    () => S.view, setView);
+
   buildSegmented(els.rangePresets, RANGE_PRESETS, () => S.range, (k) => {
     S.range = k;
     render();
@@ -3734,6 +4240,7 @@ async function init() {
   readHash();
   wireControls();
   onFilterChange();
+  setView(S.view);
 
   if (S.autoLoadTerms) loadTerms();
 }

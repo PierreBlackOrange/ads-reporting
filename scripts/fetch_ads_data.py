@@ -336,6 +336,9 @@ def list_child_accounts(cfg: dict, access_token: str) -> list[dict]:
                 "id": cid,
                 "name": client.get("descriptiveName") or f"Compte {fmt_cid(cid)}",
                 "currency": client.get("currencyCode") or "?",
+                # Google Ads rapporte dans le fuseau du compte : sans lui,
+                # « l'heure en cours » d'un rapport intrajournalier est fausse.
+                "time_zone": client.get("timeZone") or None,
             }
         )
     accounts.sort(key=lambda a: a["name"].lower())

@@ -18,6 +18,50 @@ scripts/
   config.example.json    modèle de configuration à copier
 ```
 
+## Onglet Live
+
+La journée en cours heure par heure, face au même jour de la semaine
+précédente à heure égale.
+
+```bash
+python scripts/fetch_live.py --accounts 3384610932,9875320091
+```
+
+`.github/workflows/refresh-live.yml` le relance toutes les 15 minutes entre 6h
+et 23h (heure de Paris) et commite le résultat.
+
+⚠️ **« Live » plafonne à 15-30 minutes de fraîcheur.** GitHub Pages sert un
+fichier statique : chaque mise à jour demande un commit et un redéploiement. Le
+cron GitHub Actions a une granularité minimale de 5 minutes et se déclenche
+souvent avec 5 à 15 minutes de retard, auxquelles s'ajoute le déploiement de
+Pages. L'interface affiche l'heure d'arrêt des données et la passe en rouge
+au-delà de 45 minutes. Pour du temps réel, il faut un hébergement dynamique.
+
+### Le délai de consolidation des conversions
+
+Google rattache les conversions à l'heure du **clic** et les remonte avec
+retard. Relevé sur le compte principal à 11h :
+
+| heure | 0h | 1h | 2h | 3h | 4h | 5h … 10h | 11h |
+|---|---|---|---|---|---|---|---|
+| aujourd'hui | 4,0 | 3,2 | 1,0 | 5,0 | 3,0 | **0,0** | 0,0 |
+| la veille | 7,0 | 2,0 | 1,3 | 2,0 | 2,0 | 0,3 … 2,0 | 6,7 |
+
+La veille et J-7 ont des conversions sur les 24 heures : le trou de sept heures
+est du retard, pas une absence. Une alerte « aucune conversion depuis 1 heure »
+sonnerait donc en permanence.
+
+Deux conséquences :
+
+- Le tableau de bord utilise **`all_conversions`**, dont le retard est bien
+  moindre (données jusqu'à 10h contre 4h pour la colonne `conversions`).
+- **L'alerte n'évalue que la dernière heure consolidée.** La frontière n'est pas
+  codée en dur : elle se déduit du rapport entre le volume du jour et celui de
+  la même heure J-7. Un repère vertical la matérialise sur le graphique.
+
+Le coût, lui, remonte quasiment en temps réel — la comparaison de dépense est
+fiable dès l'heure en cours.
+
 ## Section sémantique (optionnelle)
 
 Trois analyses des termes de recherche, dans un jeu de données distinct
