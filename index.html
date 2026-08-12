@@ -204,6 +204,91 @@
     </article>
   </section>
 
+  <!-- ── Sémantique / requêtes ────────────────────────────────────────── -->
+  <section class="section" aria-labelledby="h-sem">
+    <div class="section__head">
+      <h2 id="h-sem">Sémantique &amp; requêtes</h2>
+      <p class="section__sub" id="sem-meta"></p>
+    </div>
+
+    <div class="banner banner--warn" id="sem-status" hidden></div>
+
+    <!-- Chargé à la demande : ce jeu de données est lourd et n'est pas
+         nécessaire au reste du rapport. -->
+    <div class="card card--wide" id="sem-loader">
+      <div class="card__body">
+        <p class="loader">
+          <button type="button" class="btn btn--primary" id="sem-load">
+            Charger l'analyse sémantique
+          </button>
+          <span class="loader__note" id="sem-load-note">
+            Jeu de données distinct (termes de recherche), chargé séparément pour
+            ne pas ralentir le reste du rapport.
+          </span>
+        </p>
+      </div>
+    </div>
+
+    <div id="sem-content" hidden>
+      <!-- Dérive sémantique -->
+      <article class="card card--wide">
+        <div class="card__head">
+          <div>
+            <h3 class="card__title" id="h-drift">Dérive sémantique par requête</h3>
+            <p class="card__sub" id="drift-sub"></p>
+          </div>
+          <div class="card__tools">
+            <label class="select-wrap">
+              <span class="sr-only">Axe horizontal</span>
+              <select id="drift-x" class="select"></select>
+            </label>
+            <div class="segmented segmented--sm viewtoggle" role="group"
+                 aria-label="Type d'affichage" data-view-for="drift"></div>
+          </div>
+        </div>
+        <div class="card__body" id="drift-body"></div>
+      </article>
+
+      <div class="grid-2" style="margin-top:16px">
+        <!-- Intention -->
+        <article class="card">
+          <div class="card__head">
+            <div>
+              <h3 class="card__title" id="h-intent">Clustering d'intention</h3>
+              <p class="card__sub" id="intent-sub"></p>
+            </div>
+            <div class="card__tools">
+              <div class="segmented segmented--sm" role="group"
+                   aria-label="Découpage" id="intent-dim"></div>
+              <div class="segmented segmented--sm viewtoggle" role="group"
+                   aria-label="Type d'affichage" data-view-for="intent"></div>
+            </div>
+          </div>
+          <div class="card__body" id="intent-body"></div>
+        </article>
+
+        <!-- N-grammes -->
+        <article class="card">
+          <div class="card__head">
+            <div>
+              <h3 class="card__title" id="h-ngram">N-grammes émergents et déclinants</h3>
+              <p class="card__sub" id="ngram-sub"></p>
+            </div>
+            <div class="card__tools">
+              <label class="select-wrap">
+                <span class="sr-only">Mesure</span>
+                <select id="ngram-metric" class="select"></select>
+              </label>
+              <div class="segmented segmented--sm viewtoggle" role="group"
+                   aria-label="Type d'affichage" data-view-for="ngram"></div>
+            </div>
+          </div>
+          <div class="card__body" id="ngram-body"></div>
+        </article>
+      </div>
+    </div>
+  </section>
+
   <!-- ── Tableau détaillé ─────────────────────────────────────────────── -->
   <section class="section" aria-labelledby="h-detail">
     <article class="card card--wide">

@@ -1009,6 +1009,12 @@ function renderScatter(container, cfg) {
     return;
   }
 
+  // Une légende dès deux séries : sur un nuage de points la couleur est le
+  // seul porteur d'identité, elle ne peut pas rester non documentée.
+  if (cfg.series && cfg.series.length >= 2) {
+    container.appendChild(buildLegend(cfg.series, { shape: 'rect', ...(cfg.legendToggle || {}) }));
+  }
+
   const wrap = document.createElement('div');
   wrap.className = 'chart';
   container.appendChild(wrap);
@@ -1057,9 +1063,19 @@ function renderScatter(container, cfg) {
   // Titre au-dessus du plot : à gauche il chevaucherait les graduations.
   textNode('text', { class: 'axis-title', x: padL, y: padT - 8, 'text-anchor': 'start' }, yLabel, svg);
 
+  // Seuil optionnel : trait plein teinté, étiqueté — un lecteur ne devine pas
+  // où commence la zone problématique.
+  if (cfg.threshold && cfg.threshold.y !== undefined) {
+    const ty = Y(cfg.threshold.y);
+    el('line', { class: 'threshold-line', x1: padL, x2: padL + plotW, y1: ty, y2: ty }, svg);
+    textNode('text', {
+      class: 'threshold-label', x: padL + plotW, y: ty - 5, 'text-anchor': 'end',
+    }, cfg.threshold.label || '', svg);
+  }
+
   // Anneau de 2px en couleur de surface : les points restent lisibles en chevauchement.
   const marks = points.map((p) => el('circle', {
-    cx: X(p.x), cy: Y(p.y), r: 5, fill: color,
+    cx: X(p.x), cy: Y(p.y), r: p.r || 5, fill: p.color || color,
     stroke: cssVar('--surface-1'), 'stroke-width': 2,
   }, svg));
 
@@ -1071,11 +1087,12 @@ function renderScatter(container, cfg) {
   }, svg);
 
   let hovered = -1;
+  const baseR = (i) => points[i].r || 5;
   const highlight = (i) => {
     if (hovered === i) return;
-    if (hovered >= 0) marks[hovered].setAttribute('r', 5);
+    if (hovered >= 0) marks[hovered].setAttribute('r', baseR(hovered));
     hovered = i;
-    if (i >= 0) marks[i].setAttribute('r', 7);
+    if (i >= 0) marks[i].setAttribute('r', baseR(i) + 2.5);
   };
 
   overlay.addEventListener('pointermove', (ev) => {
@@ -1102,7 +1119,9 @@ function renderScatter(container, cfg) {
         s.textContent = p.sub;
         n.appendChild(s);
       }
-      for (const row of p.rows) tipRow(n, { name: row.name, value: row.value, color });
+      for (const row of p.rows) {
+        tipRow(n, { name: row.name, value: row.value, color: p.color || color });
+      }
     });
   });
   overlay.addEventListener('pointerleave', () => { highlight(-1); Tip.hide(); });
@@ -1800,6 +1819,515 @@ function renderDetail(rows, sel) {
   });
 }
 
+/* ════════════════════════════════════════════════════════════════════════════
+   Sémantique & requêtes
+
+   Jeu de données distinct (data/terms.json), chargé à la demande : il pèse
+   plusieurs centaines de kilo-octets et n'est pas nécessaire au reste du
+   rapport. Indices figés d'une paire :
+     0 terme  1 mot-clé  2 correspondance  3 compte
+     4 impressions  5 clics  6 coût  7 conversions  8 valeur
+     9 recouvrement lexical  10 score sémantique  11 intention  12 coût par mois
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+const P = {
+  TERM: 0, KW: 1, MATCH: 2, ACC: 3, IMPR: 4, CLICKS: 5, COST: 6,
+  CONV: 7, VALUE: 8, OVERLAP: 9, SEM: 10, INTENT: 11, MONTHS: 12,
+};
+
+const INTENT_LABELS = [
+  'Transactionnel', 'Informationnel', 'Marque', 'Comparateur', 'Longue traîne',
+];
+
+/* Seuil de dérive : sous 40, la requête n'a plus qu'un rapport lointain au
+   mot-clé — c'est la frontière décrite au modèle dans le prompt de scoring. */
+const DRIFT_THRESHOLD = 40;
+
+const DRIFT_X = {
+  cost: { label: 'Coût', fmt: fmtMoney, axis: fmtMoney, get: (p) => p[P.COST] },
+  clicks: { label: 'Clics', fmt: fmtInt, axis: fmtInt, get: (p) => p[P.CLICKS] },
+  conversions: { label: 'Conversions', fmt: fmtNum1, axis: fmtInt, get: (p) => p[P.CONV] },
+};
+
+const NGRAM_METRICS = {
+  cost: { label: 'Coût', fmt: fmtMoney, recent: 1, prev: 2 },
+  clicks: { label: 'Clics', fmt: fmtInt, recent: 3, prev: 4 },
+};
+
+Object.assign(S, {
+  terms: null,
+  termsState: 'idle',   // idle | loading | ready | error
+  driftX: 'cost',
+  intentDim: 'account',
+  ngramMetric: 'cost',
+});
+
+/** Paires visibles compte tenu du filtre de comptes de la barre du haut. */
+function termPairs() {
+  const t = S.terms;
+  if (!t) return [];
+  if (!S.accounts.size) return t.pairs;
+  // terms.json nomme les comptes ; data.json les indexe. On rapproche par nom.
+  const allowed = new Set(
+    [...S.accounts].map((i) => S.data.accounts[i] && S.data.accounts[i].name)
+  );
+  return t.pairs.filter((p) => allowed.has(t.accounts[p[P.ACC]]));
+}
+
+const isEnriched = () => !!(S.terms && S.terms.meta && S.terms.meta.enriched);
+
+/* ── Dérive sémantique ────────────────────────────────────────────────────── */
+
+function renderDrift() {
+  const t = S.terms;
+  const pairs = termPairs().filter((p) => p[P.SEM] !== null);
+  const xDef = DRIFT_X[S.driftX];
+
+  if (!isEnriched() || !pairs.length) {
+    els.driftSub.textContent = 'Score de pertinence non calculé.';
+    emptyState(
+      els.driftBody,
+      'Le scoring sémantique n\'a pas encore été exécuté — lancez '
+      + 'python scripts/enrich_terms.py'
+    );
+    return;
+  }
+
+  const drifting = pairs.filter((p) => p[P.SEM] < DRIFT_THRESHOLD);
+  const wasted = drifting.reduce((a, p) => a + p[P.COST], 0);
+  els.driftSub.textContent =
+    `${pairs.length.toLocaleString('fr-CH')} paires scorées · `
+    + `${drifting.length} sous le seuil de ${DRIFT_THRESHOLD}, soit `
+    + `${compactly(fmtMoney, wasted)} de dépense probablement dérivée`;
+
+  // La couleur porte le type de correspondance, pas la distance : celle-ci est
+  // déjà l'axe des ordonnées, la redoubler gâcherait le seul canal libre.
+  // Trois créneaux au plus — c'est la limite validée en comparaison toutes-paires.
+  const usedMatches = [...new Set(pairs.map((p) => p[P.MATCH]))].slice(0, 3);
+  const series = usedMatches.map((mi, k) => ({
+    key: String(mi), name: t.matchTypes[mi], color: seriesColor(k + 1),
+  }));
+  const colorOf = (mi) => {
+    const k = usedMatches.indexOf(mi);
+    return seriesColor(k >= 0 ? k + 1 : FOLD_SLOT);
+  };
+
+  if (S.views.drift === 'table') {
+    renderTable(els.driftBody, {
+      scroll: true,
+      caption: 'Dérive sémantique par requête',
+      cols: [
+        { key: 'term', label: 'Terme recherché', text: true },
+        { key: 'kw', label: 'Mot-clé déclencheur', text: true },
+        { key: 'match', label: 'Corresp.', text: true },
+        { key: 'sem', label: 'Pertinence', fmt: (v) => `${v} / 100` },
+        { key: 'cost', label: 'Coût', fmt: (v) => fmtMoney(v) },
+        { key: 'clicks', label: 'Clics', fmt: (v) => fmtInt(v) },
+        { key: 'conv', label: 'Conv.', fmt: fmtNum1 },
+      ],
+      rows: [...pairs].sort((a, b) => a[P.SEM] - b[P.SEM] || b[P.COST] - a[P.COST])
+        .map((p) => ({
+          term: t.terms[p[P.TERM]],
+          kw: t.keywords[p[P.KW]],
+          match: t.matchTypes[p[P.MATCH]],
+          sem: p[P.SEM], cost: p[P.COST], clicks: p[P.CLICKS], conv: p[P.CONV],
+          _sub: t.accounts[p[P.ACC]],
+          _swatch: colorOf(p[P.MATCH]),
+        })),
+    });
+    return;
+  }
+
+  renderScatter(els.driftBody, {
+    series,
+    points: pairs.map((p) => ({
+      x: xDef.get(p),
+      y: p[P.SEM],
+      color: colorOf(p[P.MATCH]),
+      name: t.terms[p[P.TERM]],
+      sub: `déclenché par « ${t.keywords[p[P.KW]]} » · ${t.accounts[p[P.ACC]]}`,
+      rows: [
+        { name: 'Pertinence', value: `${p[P.SEM]} / 100` },
+        { name: 'Correspondance', value: t.matchTypes[p[P.MATCH]] },
+        { name: 'Coût', value: fmtMoney(p[P.COST]) },
+        { name: 'Clics', value: fmtInt(p[P.CLICKS]) },
+        { name: 'Conversions', value: fmtNum1(p[P.CONV]) },
+      ],
+    })),
+    xFmt: xDef.fmt, xAxisFmt: xDef.axis,
+    yFmt: fmtInt, yAxisFmt: fmtInt,
+    xLabel: `${xDef.label} (${CURRENCY === 'EUR' && S.driftX === 'cost' ? 'EUR' : xDef.label})`,
+    yLabel: 'Pertinence sémantique (0-100)',
+    threshold: { y: DRIFT_THRESHOLD, label: `seuil de dérive (${DRIFT_THRESHOLD})` },
+    color: seriesColor(1),
+    height: 320,
+    ariaLabel: 'Pertinence sémantique face au coût, par requête',
+  });
+}
+
+/* ── Clustering d'intention ───────────────────────────────────────────────── */
+
+function renderIntent() {
+  const t = S.terms;
+  const pairs = termPairs().filter((p) => p[P.INTENT] !== null);
+
+  if (!isEnriched() || !pairs.length) {
+    els.intentSub.textContent = 'Intentions non classifiées.';
+    emptyState(
+      els.intentBody,
+      'La classification d\'intention n\'a pas encore été exécutée — lancez '
+      + 'python scripts/enrich_terms.py'
+    );
+    return;
+  }
+
+  const byMonth = S.intentDim === 'month';
+  els.intentSub.textContent = `Coût par intention, ventilé par ${byMonth ? 'mois' : 'compte'}`;
+
+  const seriesDefs = INTENT_LABELS.map((name, i) => ({
+    key: String(i), name, slot: i + 1,
+  }));
+
+  // Accumulateur : ligne (compte ou mois) → intention → coût.
+  const acc = new Map();
+  const bump = (rowKey, intent, cost) => {
+    let r = acc.get(rowKey);
+    if (!r) acc.set(rowKey, (r = {}));
+    r[String(intent)] = (r[String(intent)] || 0) + cost;
+  };
+
+  for (const p of pairs) {
+    if (byMonth) {
+      // Le coût mensuel est déjà ventilé dans la paire ; on ne réestime rien.
+      (p[P.MONTHS] || []).forEach((c, mi) => {
+        if (c > 0) bump(t.months[mi], p[P.INTENT], c);
+      });
+    } else {
+      bump(t.accounts[p[P.ACC]], p[P.INTENT], p[P.COST]);
+    }
+  }
+
+  let rows = [...acc.entries()]
+    .map(([label, values]) => ({
+      label, values,
+      total: Object.values(values).reduce((a, b) => a + b, 0),
+    }))
+    .filter((r) => r.total > 0);
+
+  // Par mois l'ordre chronologique prime ; par compte, le poids.
+  if (byMonth) rows.sort((a, b) => a.label.localeCompare(b.label));
+  else rows.sort((a, b) => b.total - a.total);
+
+  const MAX_ROWS = 12;
+  const capped = !byMonth && rows.length > MAX_ROWS;
+  if (capped) {
+    const tail = rows.slice(MAX_ROWS);
+    const merged = { label: `Autres (${tail.length} comptes)`, values: {}, total: 0 };
+    for (const r of tail) {
+      for (const k in r.values) merged.values[k] = (merged.values[k] || 0) + r.values[k];
+      merged.total += r.total;
+    }
+    rows = [...rows.slice(0, MAX_ROWS), merged];
+  }
+
+  const series = seriesDefs
+    .filter((s) => rows.some((r) => (r.values[s.key] || 0) > 0))
+    .map((s) => ({ ...s, color: seriesColor(s.slot) }));
+
+  if (S.views.intent === 'table') {
+    const cols = [{ key: 'label', label: byMonth ? 'Mois' : 'Compte', text: true }];
+    for (const s of series) cols.push({ key: s.key, label: s.name, fmt: (v) => fmtMoney(v || 0) });
+    cols.push({ key: 'total', label: 'Total', fmt: (v) => fmtMoney(v) });
+    const foot = { label: 'Total', total: rows.reduce((a, r) => a + r.total, 0) };
+    for (const s of series) foot[s.key] = rows.reduce((a, r) => a + (r.values[s.key] || 0), 0);
+    renderTable(els.intentBody, {
+      cols, foot, scroll: true,
+      caption: `Coût par intention et par ${byMonth ? 'mois' : 'compte'}`,
+      rows: rows.map((r) => ({ label: r.label, total: r.total, ...r.values })),
+    });
+    return;
+  }
+
+  renderStackedBars(els.intentBody, {
+    rows, series, fmt: fmtMoney,
+    ariaLabel: `Coût par intention et par ${byMonth ? 'mois' : 'compte'}`,
+  });
+}
+
+/* ── N-grammes émergents et déclinants ────────────────────────────────────── */
+
+/**
+ * Diagramme en barres divergentes.
+ *
+ * Préféré au treemap suggéré : un treemap ne peut pas représenter une valeur
+ * négative, or la moitié du sujet ici est le déclin. La paire bleu ↔ rouge avec
+ * un milieu gris neutre est le couple divergent validé — deux teintes qui se
+ * lisent comme opposées, et un zéro qui se lit comme « rien ».
+ */
+function renderDivergingBars(container, cfg) {
+  const { rows, fmt } = cfg;
+  container.replaceChildren();
+  if (!rows.length) {
+    emptyState(container, 'Aucune donnée sur cette sélection.');
+    return;
+  }
+
+  container.appendChild(buildLegend([
+    { key: 'up', name: cfg.upLabel || 'En hausse', color: seriesColor(1) },
+    { key: 'down', name: cfg.downLabel || 'En baisse', color: seriesColor(8) },
+  ], { shape: 'rect' }));
+
+  const wrap = document.createElement('div');
+  wrap.className = 'chart';
+  container.appendChild(wrap);
+
+  const W = measureWidth(container);
+  const rowH = 26;
+  const barH = 16;
+  const padT = 8;
+  const H = rows.length * rowH + padT + 26;
+
+  const LABEL_MAX = 26;
+  const trunc = (s) => (s.length > LABEL_MAX ? s.slice(0, LABEL_MAX - 1) + '…' : s);
+  const padL = Math.min(200, Math.max(90, Math.max(...rows.map((r) => trunc(r.label).length)) * 6.4 + 12));
+  const maxAbs = Math.max(...rows.map((r) => Math.abs(r.delta)), 1);
+  const axisFmt = axisFormatter(fmt, maxAbs);
+  const padR = Math.max(...rows.map((r) => axisFmt(r.delta).length)) * 6.9 + 18;
+  const plotW = Math.max(60, W - padL - Math.min(150, padR));
+
+  // Axe symétrique : le zéro est au centre, sinon la comparaison hausse/baisse
+  // serait faussée par l'échelle.
+  const mid = padL + plotW / 2;
+  const scale = (v) => (v / maxAbs) * (plotW / 2);
+
+  const svg = el('svg', {
+    viewBox: `0 0 ${W} ${H}`, width: W, height: H,
+    role: 'img', 'aria-label': cfg.ariaLabel || 'Barres divergentes',
+  }, wrap);
+
+  el('line', { class: 'zero-line', x1: mid, x2: mid, y1: padT, y2: padT + rows.length * rowH }, svg);
+
+  rows.forEach((r, i) => {
+    const yTop = padT + i * rowH + (rowH - barH) / 2;
+    const w = Math.abs(scale(r.delta));
+    const up = r.delta >= 0;
+    const x = up ? mid : mid - w;
+
+    textNode('text', {
+      class: 'axis-label', x: padL - 10, y: yTop + barH / 2 + 3.5, 'text-anchor': 'end',
+    }, trunc(r.label), svg);
+
+    const d = up
+      ? barPath(x, yTop, w, barH, 4, 'h')
+      // Miroir horizontal : l'extrémité arrondie doit rester du côté de la donnée.
+      : `M${x + w},${yTop} H${x + 4} A4,4 0 0 0 ${x},${yTop + 4}`
+        + ` V${yTop + barH - 4} A4,4 0 0 0 ${x + 4},${yTop + barH} H${x + w} Z`;
+
+    const bar = el('path', {
+      class: 'bar-mark', d, fill: seriesColor(up ? 1 : 8),
+    }, svg);
+
+    textNode('text', {
+      class: 'mark-label',
+      x: up ? mid + w + 8 : mid - w - 8,
+      y: yTop + barH / 2 + 3.5,
+      'text-anchor': up ? 'start' : 'end',
+    }, (up ? '+' : '−') + axisFmt(Math.abs(r.delta)), svg);
+
+    const hit = el('rect', {
+      class: 'hit hit--mark', x: 0, y: padT + i * rowH, width: W,
+      height: Math.max(24, rowH), tabindex: 0, role: 'button',
+      'aria-label': `${r.label}, ${up ? 'hausse' : 'baisse'} de ${fmt(Math.abs(r.delta))}`,
+    }, svg);
+
+    const show = (mx, my) => {
+      bar.classList.add('bar-mark--hover');
+      Tip.show(mx, my, (n) => {
+        tipHead(n, r.label);
+        if (r.examples && r.examples.length) {
+          const ex = document.createElement('div');
+          ex.className = 'tooltip__name';
+          ex.textContent = r.examples.slice(0, 3).join(' · ');
+          n.appendChild(ex);
+        }
+        tipRow(n, { name: 'Période récente', value: fmt(r.recent), color: seriesColor(1) });
+        tipRow(n, { name: 'Période précédente', value: fmt(r.prev), color: seriesColor(8) });
+        tipRow(n, {
+          name: 'Variation',
+          value: (up ? '+' : '−') + fmt(Math.abs(r.delta)),
+          total: true,
+        });
+      });
+    };
+    const hide = () => { bar.classList.remove('bar-mark--hover'); Tip.hide(); };
+    hit.addEventListener('pointermove', (ev) => show(ev.clientX, ev.clientY));
+    hit.addEventListener('pointerleave', hide);
+    hit.addEventListener('focus', () => {
+      const b = hit.getBoundingClientRect();
+      show(b.left + b.width / 2, b.top + b.height / 2);
+    });
+    hit.addEventListener('blur', hide);
+  });
+
+  const base = padT + rows.length * rowH;
+  textNode('text', { class: 'axis-title', x: mid + 6, y: base + 16, 'text-anchor': 'start' },
+    '→ émergents', svg);
+  textNode('text', { class: 'axis-title', x: mid - 6, y: base + 16, 'text-anchor': 'end' },
+    'déclinants ←', svg);
+}
+
+function renderNgrams() {
+  const t = S.terms;
+  const m = NGRAM_METRICS[S.ngramMetric];
+  const all = (t.ngrams || []).map((g) => ({
+    label: g[0],
+    recent: g[m.recent],
+    prev: g[m.prev],
+    delta: g[m.recent] - g[m.prev],
+    examples: g[5] || [],
+  })).filter((r) => r.delta !== 0);
+
+  const mid = t.meta.midpoint;
+  els.ngramSub.textContent =
+    `Bi- et trigrammes des termes de recherche · ${m.label} depuis le ${fmtDateShort(mid)} `
+    + `face à la période précédente · ${t.meta.ngrams_total.toLocaleString('fr-CH')} n-grammes observés, `
+    + `minimum ${t.meta.min_clicks_ngram} clics`;
+
+  if (S.views.ngram === 'table') {
+    renderTable(els.ngramBody, {
+      scroll: true,
+      caption: 'N-grammes émergents et déclinants',
+      cols: [
+        { key: 'label', label: 'N-gramme', text: true },
+        { key: 'recent', label: 'Récent', fmt: (v) => m.fmt(v) },
+        { key: 'prev', label: 'Précédent', fmt: (v) => m.fmt(v) },
+        { key: 'delta', label: 'Variation', fmt: (v) => (v >= 0 ? '+' : '−') + m.fmt(Math.abs(v)) },
+      ],
+      rows: [...all].sort((a, b) => b.delta - a.delta)
+        .map((r) => ({ ...r, _sub: r.examples.slice(0, 2).join(' · ') })),
+    });
+    return;
+  }
+
+  // Les deux extrêmes, pas le haut du classement : une tendance est un delta,
+  // et le déclin compte autant que l'émergence.
+  const sorted = [...all].sort((a, b) => b.delta - a.delta);
+  const rows = [...sorted.slice(0, 12), ...sorted.slice(-12)]
+    .filter((v, i, arr) => arr.indexOf(v) === i)
+    .sort((a, b) => b.delta - a.delta);
+
+  renderDivergingBars(els.ngramBody, {
+    rows, fmt: m.fmt,
+    upLabel: 'Émergents', downLabel: 'Déclinants',
+    ariaLabel: `N-grammes par variation de ${m.label}`,
+  });
+}
+
+/* ── Orchestration de la section ──────────────────────────────────────────── */
+
+function renderTermsSection() {
+  if (S.termsState !== 'ready') return;
+  const t = S.terms;
+
+  const cov = t.meta.cost_coverage_pct;
+  els.semMeta.textContent =
+    `${t.meta.pairs_published.toLocaleString('fr-CH')} paires publiées sur `
+    + `${t.meta.pairs_total.toLocaleString('fr-CH')} · ${cov} % de la dépense · `
+    + `${fmtDateLong(t.meta.date_start)} – ${fmtDateLong(t.meta.date_end)}`;
+
+  // Deux limites que le lecteur ne peut pas deviner et qui changent la lecture.
+  const notes = [];
+  if (cov < 95) {
+    notes.push(
+      `Les ${t.meta.pairs_published.toLocaleString('fr-CH')} paires les plus coûteuses `
+      + `représentent ${cov} % de la dépense en termes de recherche ; la traîne restante `
+      + `n'est pas représentée dans les deux premiers graphiques. Les n-grammes, eux, sont `
+      + `calculés sur la totalité des ${t.meta.ngrams_total.toLocaleString('fr-CH')} n-grammes observés.`
+    );
+  }
+  if (!t.meta.enriched) {
+    notes.push(
+      'Le scoring sémantique et la classification d\'intention n\'ont pas été exécutés : '
+      + 'les deux premiers graphiques restent vides. Lancez python scripts/enrich_terms.py.'
+    );
+  } else if (t.meta.enriched_count < t.meta.pairs_published) {
+    notes.push(
+      `${t.meta.enriched_count.toLocaleString('fr-CH')} paires sur `
+      + `${t.meta.pairs_published.toLocaleString('fr-CH')} sont scorées ; les autres sont absentes `
+      + 'des deux premiers graphiques.'
+    );
+  }
+
+  if (notes.length) {
+    els.semStatus.replaceChildren();
+    const strong = document.createElement('strong');
+    strong.textContent = 'Portée des données.';
+    els.semStatus.appendChild(strong);
+    const span = document.createElement('span');
+    span.textContent = notes.join(' ');
+    els.semStatus.appendChild(span);
+    els.semStatus.hidden = false;
+  } else {
+    els.semStatus.hidden = true;
+  }
+
+  renderDrift();
+  renderIntent();
+  renderNgrams();
+}
+
+async function loadTerms() {
+  if (S.termsState === 'loading' || S.termsState === 'ready') return;
+  S.termsState = 'loading';
+  els.semLoad.disabled = true;
+  els.semLoad.textContent = 'Chargement…';
+
+  try {
+    const res = await fetch('data/terms.json', { cache: 'no-cache' });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    S.terms = await res.json();
+  } catch (err) {
+    S.termsState = 'error';
+    els.semLoad.disabled = false;
+    els.semLoad.textContent = 'Réessayer';
+    els.semLoadNote.textContent =
+      `Échec du chargement de data/terms.json (${err.message}). `
+      + 'Générez-le avec python scripts/fetch_search_terms.py.';
+    return;
+  }
+
+  S.termsState = 'ready';
+  els.semLoader.hidden = true;
+  els.semContent.hidden = false;
+
+  fillSelectFrom(els.driftX, DRIFT_X, S.driftX);
+  els.driftX.addEventListener('change', () => { S.driftX = els.driftX.value; renderTermsSection(); });
+
+  fillSelectFrom(els.ngramMetric, NGRAM_METRICS, S.ngramMetric);
+  els.ngramMetric.addEventListener('change', () => {
+    S.ngramMetric = els.ngramMetric.value;
+    renderTermsSection();
+  });
+
+  buildSegmented(els.intentDim,
+    [{ key: 'account', label: 'Par compte' }, { key: 'month', label: 'Par mois' }],
+    () => S.intentDim, (k) => { S.intentDim = k; renderTermsSection(); });
+
+  buildViewToggles();
+  renderTermsSection();
+}
+
+function fillSelectFrom(sel, defs, active) {
+  sel.replaceChildren();
+  for (const k in defs) {
+    const o = document.createElement('option');
+    o.value = k;
+    o.textContent = defs[k].label;
+    if (k === active) o.selected = true;
+    sel.appendChild(o);
+  }
+}
+
 /* ── Export CSV ───────────────────────────────────────────────────────────── */
 
 function exportCsv() {
@@ -2144,6 +2672,9 @@ function doRender() {
   renderTop(rows);
   renderMix(sel);
   renderDetail(rows, sel);
+  // La section sémantique suit le filtre de comptes, mais pas celui de période :
+  // terms.json a sa propre fenêtre, annoncée dans son en-tête.
+  if (S.termsState === 'ready') renderTermsSection();
 }
 
 /* ── Bandeaux & en-tête ───────────────────────────────────────────────────── */
@@ -2230,6 +2761,11 @@ function cacheEls() {
     topBody: 'top-body', topSub: 'top-sub', topMetric: 'top-metric',
     mixBody: 'mix-body', mixSub: 'mix-sub', mixDim: 'mix-dim',
     detailBody: 'detail-body', detailSub: 'detail-sub', exportCsv: 'export-csv',
+    semMeta: 'sem-meta', semStatus: 'sem-status', semLoader: 'sem-loader',
+    semLoad: 'sem-load', semLoadNote: 'sem-load-note', semContent: 'sem-content',
+    driftBody: 'drift-body', driftSub: 'drift-sub', driftX: 'drift-x',
+    intentBody: 'intent-body', intentSub: 'intent-sub', intentDim: 'intent-dim',
+    ngramBody: 'ngram-body', ngramSub: 'ngram-sub', ngramMetric: 'ngram-metric',
   };
   for (const k in ids) els[k] = document.getElementById(ids[k]);
 }
@@ -2303,6 +2839,7 @@ function wireControls() {
   });
 
   els.exportCsv.addEventListener('click', exportCsv);
+  els.semLoad.addEventListener('click', loadTerms);
 
   // Un clic hors d'un menu le referme.
   document.addEventListener('click', (ev) => {

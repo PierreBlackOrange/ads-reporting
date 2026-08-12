@@ -8,6 +8,15 @@ google-ads.yaml
 *client_secret*.json
 *token*.json
 
+# ── Termes de recherche — décision de publication explicite ─────────────────
+# terms.json contient les requêtes réellement tapées par des internautes. Sur un
+# dépôt public, cela expose des données d'un autre ordre que des noms de
+# campagnes, et la redistribution de termes de recherche est encadrée par les
+# conditions d'utilisation de Google Ads.
+# Ignoré par défaut pour qu'aucun `git add .` ne le publie par accident.
+# Pour le publier délibérément : git add -f data/terms.json
+data/terms.json
+
 # ── Python ──────────────────────────────────────────────────────────────────
 __pycache__/
 *.py[cod]

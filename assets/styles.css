@@ -111,6 +111,11 @@
 
 *, *::before, *::after { box-sizing: border-box; }
 
+/* Tout élément passé en display:flex/grid ignore l'attribut [hidden], dont la
+   valeur par défaut n'est qu'un display:none de faible priorité. On le
+   réaffirme une fois pour toutes plutôt que classe par classe. */
+[hidden] { display: none !important; }
+
 html { scroll-behavior: smooth; }
 
 body {
@@ -598,6 +603,24 @@ main {
   font-size: 13px;
   color: var(--text-muted);
 }
+
+/* Ligne de seuil : trait plein comme les autres, mais teinté — le tiret est
+   réservé à rien du tout, il ajoute du bruit et se lit comme une projection. */
+.threshold-line { stroke: var(--status-warning); stroke-width: 1.5; }
+.threshold-label { font-size: 10px; fill: var(--text-muted); }
+
+/* Axe de symétrie d'un diagramme divergent. */
+.zero-line { stroke: var(--baseline); stroke-width: 1; }
+
+.loader {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 14px;
+  margin: 0;
+  padding: 18px 0 6px;
+}
+.loader__note { font-size: 12px; color: var(--text-muted); max-width: 52ch; }
 
 /* ── Infobulle ────────────────────────────────────────────────────────────── */
 

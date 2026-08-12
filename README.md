@@ -10,11 +10,48 @@ assets/styles.css     palette, thème clair/sombre, mise en page
 assets/app.js         agrégation en mémoire et rendu SVG
 data/data.json        les données (le seul fichier à régénérer)
 scripts/
-  fetch_ads_data.py     récupère les vraies performances depuis l'API Google Ads
-  get_refresh_token.py  obtient le refresh token OAuth (une seule fois)
-  gen_demo_data.py      génère un jeu de démonstration au même schéma
-  config.example.json   modèle de configuration à copier
+  fetch_ads_data.py      récupère les vraies performances depuis l'API Google Ads
+  fetch_search_terms.py  récupère les termes de recherche (section sémantique)
+  enrich_terms.py        score sémantique + intention via l'API Claude
+  get_refresh_token.py   obtient le refresh token OAuth (une seule fois)
+  gen_demo_data.py       génère un jeu de démonstration au même schéma
+  config.example.json    modèle de configuration à copier
 ```
+
+## Section sémantique (optionnelle)
+
+Trois analyses des termes de recherche, dans un jeu de données distinct
+(`data/terms.json`) chargé à la demande pour ne pas alourdir le rapport
+principal : dérive sémantique par requête, clustering d'intention, et
+n-grammes émergents/déclinants.
+
+```bash
+python scripts/fetch_search_terms.py --days 90 --max-pairs 8000
+pip install anthropic
+python scripts/enrich_terms.py --dry-run   # estime le coût API
+python scripts/enrich_terms.py
+```
+
+**Le n-gramme fonctionne sans l'étape d'enrichissement** — c'est du calcul pur.
+Les deux autres graphiques restent vides tant que `enrich_terms.py` n'a pas
+tourné, car ils reposent sur un scoring par modèle de langage.
+
+Deux choix de volumétrie, mesurés et non devinés :
+
+- **`clics > 0`** au niveau de la requête API. Sur le compte le plus dépensier,
+  cela fait passer 33 542 lignes à 7 482 sur 7 jours **pour un coût total
+  identique** — un terme sans clic ne dépense rien. Sans ce filtre, 90 jours ×
+  21 comptes représentent environ 14 millions de lignes.
+- **Plafond de paires.** Le coût est très concentré : les 100 premières paires
+  portent 55 % de la dépense d'un compte. À l'échelle du MCC la traîne est plus
+  longue — 8 000 paires couvrent 66 % de la dépense. La couverture réellement
+  atteinte est calculée à chaque exécution et affichée dans le dashboard.
+
+⚠️ **`data/terms.json` est gitignoré par défaut.** Il contient les requêtes
+réellement tapées par des internautes — une catégorie de données distincte des
+noms de campagnes, et dont la redistribution est encadrée par les conditions
+d'utilisation de Google Ads. Pour le publier délibérément :
+`git add -f data/terms.json`.
 
 ---
 
