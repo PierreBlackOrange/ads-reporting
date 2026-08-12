@@ -1835,8 +1835,11 @@ const P = {
   CONV: 7, VALUE: 8, OVERLAP: 9, SEM: 10, INTENT: 11, MONTHS: 12,
 };
 
+// L'index 5 n'est produit que par la classification par règles : un modèle
+// tranche toujours, les règles non — et il vaut mieux le montrer que le cacher.
 const INTENT_LABELS = [
   'Transactionnel', 'Informationnel', 'Marque', 'Comparateur', 'Longue traîne',
+  'Indéterminé',
 ];
 
 /* Seuil de dérive : sous 40, la requête n'a plus qu'un rapport lointain au
@@ -1878,32 +1881,80 @@ const isEnriched = () => !!(S.terms && S.terms.meta && S.terms.meta.enriched);
 
 /* ── Dérive sémantique ────────────────────────────────────────────────────── */
 
+/**
+ * Deux mesures possibles sur l'axe des ordonnées, jamais confondues.
+ *
+ * Le score sémantique vient d'un modèle et mesure le sens. À défaut, on
+ * retombe sur le recouvrement lexical, déjà présent dans les données — mais
+ * c'est une mesure de surface : deux synonymes y obtiennent 0 tout en étant
+ * parfaitement pertinents. L'axe, le seuil et l'avertissement changent avec la
+ * mesure, pour qu'un recouvrement faible ne se lise jamais comme une dérive avérée.
+ */
+function driftMeasure() {
+  const scored = S.terms.pairs.some((p) => p[P.SEM] !== null);
+  return scored
+    ? {
+        key: 'sem',
+        get: (p) => p[P.SEM],
+        has: (p) => p[P.SEM] !== null,
+        axis: 'Pertinence sémantique (0-100)',
+        threshold: DRIFT_THRESHOLD,
+        thresholdLabel: `seuil de dérive (${DRIFT_THRESHOLD})`,
+        rowLabel: 'Pertinence',
+      }
+    : {
+        key: 'lex',
+        get: (p) => Math.round(p[P.OVERLAP] * 100),
+        has: (p) => p[P.OVERLAP] !== null && p[P.OVERLAP] !== undefined,
+        axis: 'Recouvrement lexical (0-100)',
+        threshold: 30,
+        thresholdLabel: 'faible recouvrement (30)',
+        rowLabel: 'Recouvrement',
+      };
+}
+
 function renderDrift() {
   const t = S.terms;
-  const pairs = termPairs().filter((p) => p[P.SEM] !== null);
+  const meas = driftMeasure();
+  const pairs = termPairs().filter(meas.has);
   const xDef = DRIFT_X[S.driftX];
 
-  if (!isEnriched() || !pairs.length) {
-    els.driftSub.textContent = 'Score de pertinence non calculé.';
-    emptyState(
-      els.driftBody,
-      'Le scoring sémantique n\'a pas encore été exécuté — lancez '
-      + 'python scripts/enrich_terms.py'
-    );
+  if (!pairs.length) {
+    els.driftSub.textContent = 'Aucune paire mesurable sur cette sélection.';
+    emptyState(els.driftBody, 'Aucune donnée sur cette sélection.');
     return;
   }
 
-  const drifting = pairs.filter((p) => p[P.SEM] < DRIFT_THRESHOLD);
-  const wasted = drifting.reduce((a, p) => a + p[P.COST], 0);
-  els.driftSub.textContent =
-    `${pairs.length.toLocaleString('fr-CH')} paires scorées · `
-    + `${drifting.length} sous le seuil de ${DRIFT_THRESHOLD}, soit `
-    + `${compactly(fmtMoney, wasted)} de dépense probablement dérivée`;
+  const below = pairs.filter((p) => meas.get(p) < meas.threshold);
+  const wasted = below.reduce((a, p) => a + p[P.COST], 0);
+
+  // La distribution des coûts est très asymétrique : quelques paires à
+  // plusieurs milliers d'euros écrasent des milliers d'autres à quelques
+  // centimes contre l'axe. Tracer tout donnerait une bande illisible collée à
+  // gauche. On garde donc les paires où une dérive coûte réellement quelque
+  // chose — c'est aussi le seul sous-ensemble sur lequel on peut agir. Le
+  // tableau, lui, reste exhaustif.
+  const MAX_POINTS = 500;
+  const plotted = [...pairs].sort((a, b) => b[P.COST] - a[P.COST]).slice(0, MAX_POINTS);
+  const capped = pairs.length > MAX_POINTS;
+
+  const nb = ' ';   // insécable : « 30 % » ne doit pas se couper en fin de ligne
+  const head = meas.key === 'sem'
+    ? `${pairs.length.toLocaleString('fr-CH')} paires scorées par modèle · `
+      + `${below.length} sous le seuil de ${meas.threshold}, soit `
+      + `${compactly(fmtMoney, wasted)} de dépense probablement dérivée`
+    : `Recouvrement lexical, à défaut de scoring sémantique · `
+      + `${below.length} paires sous ${meas.threshold}${nb}% de mots partagés, soit `
+      + `${compactly(fmtMoney, wasted)} — à vérifier, un synonyme y tombe aussi`;
+  els.driftSub.textContent = head
+    + (capped && S.views.drift !== 'table'
+        ? ` · graphique limité aux ${MAX_POINTS} paires les plus coûteuses, tableau complet`
+        : '');
 
   // La couleur porte le type de correspondance, pas la distance : celle-ci est
   // déjà l'axe des ordonnées, la redoubler gâcherait le seul canal libre.
   // Trois créneaux au plus — c'est la limite validée en comparaison toutes-paires.
-  const usedMatches = [...new Set(pairs.map((p) => p[P.MATCH]))].slice(0, 3);
+  const usedMatches = [...new Set(plotted.map((p) => p[P.MATCH]))].slice(0, 3);
   const series = usedMatches.map((mi, k) => ({
     key: String(mi), name: t.matchTypes[mi], color: seriesColor(k + 1),
   }));
@@ -1920,17 +1971,17 @@ function renderDrift() {
         { key: 'term', label: 'Terme recherché', text: true },
         { key: 'kw', label: 'Mot-clé déclencheur', text: true },
         { key: 'match', label: 'Corresp.', text: true },
-        { key: 'sem', label: 'Pertinence', fmt: (v) => `${v} / 100` },
+        { key: 'sem', label: meas.rowLabel, fmt: (v) => `${v} / 100` },
         { key: 'cost', label: 'Coût', fmt: (v) => fmtMoney(v) },
         { key: 'clicks', label: 'Clics', fmt: (v) => fmtInt(v) },
         { key: 'conv', label: 'Conv.', fmt: fmtNum1 },
       ],
-      rows: [...pairs].sort((a, b) => a[P.SEM] - b[P.SEM] || b[P.COST] - a[P.COST])
+      rows: [...pairs].sort((a, b) => meas.get(a) - meas.get(b) || b[P.COST] - a[P.COST])
         .map((p) => ({
           term: t.terms[p[P.TERM]],
           kw: t.keywords[p[P.KW]],
           match: t.matchTypes[p[P.MATCH]],
-          sem: p[P.SEM], cost: p[P.COST], clicks: p[P.CLICKS], conv: p[P.CONV],
+          sem: meas.get(p), cost: p[P.COST], clicks: p[P.CLICKS], conv: p[P.CONV],
           _sub: t.accounts[p[P.ACC]],
           _swatch: colorOf(p[P.MATCH]),
         })),
@@ -1940,14 +1991,14 @@ function renderDrift() {
 
   renderScatter(els.driftBody, {
     series,
-    points: pairs.map((p) => ({
+    points: plotted.map((p) => ({
       x: xDef.get(p),
-      y: p[P.SEM],
+      y: meas.get(p),
       color: colorOf(p[P.MATCH]),
       name: t.terms[p[P.TERM]],
       sub: `déclenché par « ${t.keywords[p[P.KW]]} » · ${t.accounts[p[P.ACC]]}`,
       rows: [
-        { name: 'Pertinence', value: `${p[P.SEM]} / 100` },
+        { name: meas.rowLabel, value: `${meas.get(p)} / 100` },
         { name: 'Correspondance', value: t.matchTypes[p[P.MATCH]] },
         { name: 'Coût', value: fmtMoney(p[P.COST]) },
         { name: 'Clics', value: fmtInt(p[P.CLICKS]) },
@@ -1956,9 +2007,9 @@ function renderDrift() {
     })),
     xFmt: xDef.fmt, xAxisFmt: xDef.axis,
     yFmt: fmtInt, yAxisFmt: fmtInt,
-    xLabel: `${xDef.label} (${CURRENCY === 'EUR' && S.driftX === 'cost' ? 'EUR' : xDef.label})`,
-    yLabel: 'Pertinence sémantique (0-100)',
-    threshold: { y: DRIFT_THRESHOLD, label: `seuil de dérive (${DRIFT_THRESHOLD})` },
+    xLabel: S.driftX === 'cost' ? `Coût (${CURRENCY})` : xDef.label,
+    yLabel: meas.axis,
+    threshold: { y: meas.threshold, label: meas.thresholdLabel },
     color: seriesColor(1),
     height: 320,
     ariaLabel: 'Pertinence sémantique face au coût, par requête',
@@ -1971,18 +2022,21 @@ function renderIntent() {
   const t = S.terms;
   const pairs = termPairs().filter((p) => p[P.INTENT] !== null);
 
-  if (!isEnriched() || !pairs.length) {
+  if (!pairs.length) {
     els.intentSub.textContent = 'Intentions non classifiées.';
     emptyState(
       els.intentBody,
-      'La classification d\'intention n\'a pas encore été exécutée — lancez '
-      + 'python scripts/enrich_terms.py'
+      'Aucune classification d\'intention — lancez python scripts/classify_terms.py '
+      + '(par règles, sans clé API) ou python scripts/enrich_terms.py (par modèle).'
     );
     return;
   }
 
   const byMonth = S.intentDim === 'month';
-  els.intentSub.textContent = `Coût par intention, ventilé par ${byMonth ? 'mois' : 'compte'}`;
+  const method = (S.terms.meta || {}).intent_method === 'llm'
+    ? 'classées par modèle' : 'classées par règles lexicales';
+  els.intentSub.textContent =
+    `Coût par intention, ventilé par ${byMonth ? 'mois' : 'compte'} · ${method}`;
 
   const seriesDefs = INTENT_LABELS.map((name, i) => ({
     key: String(i), name, slot: i + 1,
@@ -2265,16 +2319,29 @@ function renderTermsSection() {
       + `calculés sur la totalité des ${t.meta.ngrams_total.toLocaleString('fr-CH')} n-grammes observés.`
     );
   }
-  if (!t.meta.enriched) {
+  // Chaque graphique dit par quelle méthode il a été produit : les deux
+  // n'ont pas la même fiabilité et le lecteur doit pouvoir en tenir compte.
+  const semScored = t.pairs.some((p) => p[P.SEM] !== null);
+  if (!semScored) {
     notes.push(
-      'Le scoring sémantique et la classification d\'intention n\'ont pas été exécutés : '
-      + 'les deux premiers graphiques restent vides. Lancez python scripts/enrich_terms.py.'
+      'Pertinence sémantique non calculée : le premier graphique utilise le '
+      + 'recouvrement lexical (mots partagés entre la requête et le mot-clé). '
+      + 'C\'est une mesure de surface — deux synonymes y obtiennent un score nul '
+      + 'tout en étant parfaitement pertinents, donc un point bas est une piste '
+      + 'à vérifier, pas une dérive avérée. Pour une vraie distance de sens : '
+      + 'python scripts/enrich_terms.py (nécessite une clé API Anthropic).'
     );
-  } else if (t.meta.enriched_count < t.meta.pairs_published) {
+  }
+
+  if (t.meta.intent_method === 'rules') {
     notes.push(
-      `${t.meta.enriched_count.toLocaleString('fr-CH')} paires sur `
-      + `${t.meta.pairs_published.toLocaleString('fr-CH')} sont scorées ; les autres sont absentes `
-      + 'des deux premiers graphiques.'
+      'Intentions classées par règles lexicales, sans modèle : la catégorie '
+      + '« Indéterminé » regroupe les requêtes courtes sans marqueur reconnu, '
+      + 'que les règles ne savent pas trancher.'
+    );
+  } else if (!t.meta.intent_method) {
+    notes.push(
+      'Intentions non classées — lancez python scripts/classify_terms.py.'
     );
   }
 
