@@ -454,6 +454,82 @@
     </div>
   </section>
 
+  <!-- ── AI Max ───────────────────────────────────────────────────────── -->
+  <section class="section" id="aimax-section" aria-labelledby="h-aimax" hidden>
+    <div class="section__head">
+      <h2 id="h-aimax">AI Max</h2>
+      <p class="section__sub" id="aimax-meta"></p>
+    </div>
+
+    <div class="banner banner--warn" id="aimax-note" hidden></div>
+
+    <div class="kpi-grid" id="aimax-kpi"></div>
+
+    <article class="card card--wide">
+      <div class="card__head">
+        <div>
+          <h3 class="card__title" id="h-aimax-mt">AI Max face aux autres correspondances</h3>
+          <p class="card__sub" id="aimax-mt-sub"></p>
+        </div>
+        <div class="card__tools">
+          <label class="select-wrap">
+            <span class="sr-only">Mesure</span>
+            <select id="aimax-metric" class="select"></select>
+          </label>
+          <div class="segmented segmented--sm viewtoggle" role="group"
+               aria-label="Type d'affichage" data-view-for="aimaxmt"></div>
+        </div>
+      </div>
+      <div class="card__body" id="aimax-mt-body"></div>
+    </article>
+
+    <article class="card card--wide" style="margin-top:16px">
+      <div class="card__head">
+        <div>
+          <h3 class="card__title" id="h-aimax-terms">Requêtes captées par AI Max</h3>
+          <p class="card__sub" id="aimax-terms-sub"></p>
+        </div>
+        <div class="card__tools">
+          <div class="segmented segmented--sm" role="group"
+               aria-label="Source de correspondance" id="aimax-source"></div>
+          <div class="segmented segmented--sm viewtoggle" role="group"
+               aria-label="Type d'affichage" data-view-for="aimaxterms"></div>
+        </div>
+      </div>
+      <div class="card__body" id="aimax-terms-body"></div>
+    </article>
+
+    <div class="grid-2" style="margin-top:16px">
+      <article class="card">
+        <div class="card__head">
+          <div>
+            <h3 class="card__title" id="h-aimax-ramp">Montée en charge</h3>
+            <p class="card__sub" id="aimax-ramp-sub"></p>
+          </div>
+          <div class="card__tools">
+            <div class="segmented segmented--sm viewtoggle" role="group"
+                 aria-label="Type d'affichage" data-view-for="aimaxramp"></div>
+          </div>
+        </div>
+        <div class="card__body" id="aimax-ramp-body"></div>
+      </article>
+
+      <article class="card">
+        <div class="card__head">
+          <div>
+            <h3 class="card__title" id="h-aimax-camp">Campagnes AI Max</h3>
+            <p class="card__sub" id="aimax-camp-sub"></p>
+          </div>
+          <div class="card__tools">
+            <div class="segmented segmented--sm viewtoggle" role="group"
+                 aria-label="Type d'affichage" data-view-for="aimaxcamp"></div>
+          </div>
+        </div>
+        <div class="card__body" id="aimax-camp-body"></div>
+      </article>
+    </div>
+  </section>
+
   <!-- ── Tableau détaillé ─────────────────────────────────────────────── -->
   <section class="section" aria-labelledby="h-detail">
     <article class="card card--wide">

@@ -115,6 +115,11 @@ function fmtDateLong(iso) {
   const d = parseDate(iso);
   return `${d.getDate()} ${MONTHS[d.getMonth()]} ${d.getFullYear()}`;
 }
+/** « 2026-07 » → « juil. 2026 ». */
+function fmtMonth(ym) {
+  const [y, m] = ym.split('-').map(Number);
+  return `${MONTHS[m - 1]} ${y}`;
+}
 function addDays(iso, n) {
   const d = parseDate(iso);
   d.setDate(d.getDate() + n);
@@ -153,6 +158,16 @@ const CHANNEL_LABELS = {
   LOCAL: 'Local', SMART: 'Smart', APP: 'Application', HOTEL: 'Hôtel',
   MULTI_CHANNEL: 'Multicanal', UNKNOWN: 'Inconnu',
 };
+// Le type de correspondance d'une *requête* n'est pas celui d'un mot-clé :
+// NEAR_EXACT et NEAR_PHRASE désignent les variantes proches que Google apparie
+// sans que l'annonceur les ait écrites. Les nommer « Exact » et « Expression »
+// les confondrait avec les ciblages déclarés.
+const MATCH_TYPE_LABELS = {
+  EXACT: 'Exact', PHRASE: 'Expression', BROAD: 'Large',
+  NEAR_EXACT: 'Variante proche (exact)', NEAR_PHRASE: 'Variante proche (expression)',
+  AI_MAX: 'AI Max', PERFORMANCE_MAX: 'Performance Max',
+  UNKNOWN: 'Inconnu', UNSPECIFIED: 'Non spécifié',
+};
 const label = (map, key) => map[key] || key;
 
 const RANGE_PRESETS = [
@@ -181,6 +196,10 @@ const S = {
   topMetric: 'cost',
   mixDim: 'device',
   mixHidden: new Set(),
+  aimax: null,
+  aimaxState: 'idle',    // idle | loading | ready | error
+  aimaxMetric: 'cost',
+  aimaxSource: 'all',
   marginMeasure: 'margin',
   // Tri propre à la marge : le tableau de détail garde le sien, les deux
   // répondent à des questions différentes.
@@ -844,7 +863,9 @@ function renderBarChart(container, cfg) {
   const barH = 24;   // plafonné : jamais toute la bande, le reste est de l'air
   const padT = 6;
   const padB = 6;
-  const H = items.length * rowH + padT + padB;
+  // Une ligne de référence ajoute une bande sous le graphique pour son libellé.
+  const ref = cfg.refLine || null;
+  const H = items.length * rowH + padT + padB + (ref ? 18 : 0);
 
   const NAME_MAX = 34;
   const SUB_MAX = 26;
@@ -856,7 +877,8 @@ function renderBarChart(container, cfg) {
     : 0;
   const padL = Math.min(250, Math.max(90, Math.max(nameW, subW) + 14));
 
-  const maxV = Math.max(...items.map((i) => Math.abs(i.value)), 1);
+  const maxV = Math.max(...items.map((i) => Math.abs(i.value)), 1,
+                        ref ? Math.abs(ref.value) : 0);
   const axisFmt = axisFormatter(fmt, maxV);
   const padR = Math.min(160, Math.max(...items.map((i) => axisFmt(i.value).length)) * 6.9 + 16);
   const plotW = Math.max(40, W - padL - padR);
@@ -865,6 +887,21 @@ function renderBarChart(container, cfg) {
     viewBox: `0 0 ${W} ${H}`, width: W, height: H,
     role: 'img', 'aria-label': cfg.ariaLabel || 'Diagramme à barres',
   }, wrap);
+
+  // Tracée avant les barres : un seuil est un fond de scène, pas une donnée.
+  // Les barres partent toujours de zéro — le repère donne le point de lecture
+  // sans qu'il faille tronquer l'échelle, ce qui fausserait les longueurs.
+  if (ref) {
+    const rx = padL + (Math.abs(ref.value) / maxV) * plotW;
+    const bottom = padT + items.length * rowH;
+    el('line', {
+      class: 'zero-line', x1: rx, x2: rx, y1: padT, y2: bottom,
+      'stroke-dasharray': '4 3',
+    }, svg);
+    textNode('text', {
+      class: 'axis-title', x: rx, y: bottom + 14, 'text-anchor': 'middle',
+    }, ref.label, svg);
+  }
 
   items.forEach((it, i) => {
     const yTop = padT + i * rowH + (rowH - barH) / 2;
@@ -887,8 +924,10 @@ function renderBarChart(container, cfg) {
     }
 
     const g = el('g', {}, svg);
+    // Une teinte par marque reste possible quand la question posée oppose une
+    // catégorie au reste ; à défaut, série unique et teinte unique.
     const path = el('path', {
-      class: 'bar-mark', d: barPath(padL, yTop, w, barH, 4, 'h'), fill: color,
+      class: 'bar-mark', d: barPath(padL, yTop, w, barH, 4, 'h'), fill: it.color || color,
     }, g);
 
     // Valeur au bout de la barre, hors de la barre : jamais rognée.
@@ -1981,6 +2020,622 @@ function renderMargin(rows) {
     ],
     ariaLabel: `${m.label} par campagne, des plus fortes aux plus faibles`,
   });
+}
+
+/* ════════════════════════════════════════════════════════════════════════════
+   AI Max
+
+   AI Max apparaît dans l'API à trois endroits, vérifiés sur cette version via
+   GoogleAdsFieldService plutôt que supposés :
+
+     campaign.ai_max_setting.enable_ai_max      activé ou non, par campagne
+     segments.search_term_match_type = AI_MAX   requêtes appariées par AI Max
+     segments.search_term_match_source          AI_MAX_BROAD_MATCH (élargissement
+                                                d'un mot-clé) ou AI_MAX_KEYWORDLESS
+                                                (trafic sans aucun mot-clé)
+
+   Le périmètre du jeu de données, ce sont les comptes où AI Max tourne, pas le
+   MCC entier : comparer AI Max aux autres correspondances n'a de sens qu'à
+   l'intérieur des comptes qui l'ont activé. Ailleurs, sa part serait diluée
+   dans un total sans rapport.
+
+   Fenêtre fixe, indépendante du filtre de période — comme les sections
+   sémantique et types de correspondance, qui reposent sur le même genre
+   d'agrégat pré-calculé. Le filtre de comptes, lui, s'applique.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/* Colonnes de cells : [compte, type, source, mois, impr, clics, coût, conv, valeur] */
+const AX = { ACC: 0, MT: 1, SRC: 2, MONTH: 3, IMPR: 4, CLICKS: 5, COST: 6, CONV: 7, VALUE: 8 };
+/* Colonnes de terms : [terme, compte, source, impr, clics, coût, conv, valeur] */
+const AT = { TERM: 0, ACC: 1, SRC: 2, IMPR: 3, CLICKS: 4, COST: 5, CONV: 6, VALUE: 7 };
+/* Colonnes de campaigns : [nom, compte, activé, impr, clics, coût, conv, valeur] */
+const AC = { NAME: 0, ACC: 1, ON: 2, IMPR: 3, CLICKS: 4, COST: 5, CONV: 6, VALUE: 7 };
+
+const AIMAX_TYPE = 'AI_MAX';
+
+/**
+ * Mesures disponibles sur la comparaison.
+ *
+ * Les ratios sont recalculés sur les totaux agrégés, jamais moyennés depuis des
+ * ratios déjà dérivés — une moyenne de ROAS n'est pas le ROAS des totaux.
+ */
+const AIMAX_METRICS = {
+  cost:     { label: 'Coût',            calc: (t) => t.cost,                          fmt: fmtMoney, dir: 0 },
+  clicks:   { label: 'Clics',           calc: (t) => t.clicks,                        fmt: fmtInt,   dir: 0 },
+  impr:     { label: 'Impressions',     calc: (t) => t.impr,                          fmt: fmtInt,   dir: 0 },
+  conv:     { label: 'Conversions',     calc: (t) => t.conv,                          fmt: fmtNum1,  dir: 1 },
+  value:    { label: 'Valeur de conv.', calc: (t) => t.value,                         fmt: fmtMoney, dir: 1 },
+  roas:     { label: 'ROAS',            calc: (t) => (t.cost ? t.value / t.cost : NaN), fmt: fmtRatio, dir: 1 },
+  cpa:      { label: 'CPA',             calc: (t) => (t.conv ? t.cost / t.conv : NaN),  fmt: fmtMoney, dir: -1 },
+  convRate: { label: 'Taux de conv.',   calc: (t) => (t.clicks ? t.conv / t.clicks : NaN), fmt: fmtPct, dir: 1 },
+};
+
+const AIMAX_TERM_ROWS = 20;
+
+const emptyAx = () => ({ impr: 0, clicks: 0, cost: 0, conv: 0, value: 0 });
+
+function addAx(t, row, base) {
+  t.impr   += row[base + 0];
+  t.clicks += row[base + 1];
+  t.cost   += row[base + 2];
+  t.conv   += row[base + 3];
+  t.value  += row[base + 4];
+  return t;
+}
+
+/** Indices de comptes AI Max retenus par le filtre du haut ; null = tous. */
+function selectedAimaxAccounts() {
+  const a = S.aimax;
+  if (!a || !S.accounts.size) return null;
+  const names = new Set(
+    [...S.accounts].map((i) => S.data.accounts[i] && S.data.accounts[i].name)
+  );
+  return new Set(a.accounts.map((n, i) => (names.has(n) ? i : -1)).filter((i) => i >= 0));
+}
+
+/** Le filtre exclut-il tout le périmètre AI Max ? */
+function aimaxOutOfScope() {
+  const s = selectedAimaxAccounts();
+  return !!(s && !s.size);
+}
+
+function aimaxScopeMsg() {
+  const a = S.aimax;
+  return `Aucun des comptes filtrés n'utilise AI Max. Seuls ces comptes l'ont `
+    + `activé : ${a.accounts.join(', ')}.`;
+}
+
+/** Cellules retenues par le filtre de comptes. */
+function aimaxCells() {
+  const allowed = selectedAimaxAccounts();
+  const cells = S.aimax.cells;
+  return allowed ? cells.filter((c) => allowed.has(c[AX.ACC])) : cells;
+}
+
+/** Totaux par type de correspondance, sur le périmètre filtré. */
+function aimaxByType() {
+  const a = S.aimax;
+  const out = new Map();
+  for (const c of aimaxCells()) {
+    const key = a.matchTypes[c[AX.MT]];
+    addAx(out.get(key) || out.set(key, emptyAx()).get(key), c, AX.IMPR);
+  }
+  return out;
+}
+
+function renderAimaxKpis() {
+  const byType = aimaxByType();
+  const ai = byType.get(AIMAX_TYPE) || emptyAx();
+  const rest = emptyAx();
+  for (const [k, v] of byType) {
+    if (k === AIMAX_TYPE) continue;
+    for (const f of ['impr', 'clicks', 'cost', 'conv', 'value']) rest[f] += v[f];
+  }
+  const totalCost = ai.cost + rest.cost;
+
+  const allowed = selectedAimaxAccounts();
+  const termRows = S.aimax.terms.filter((t) => !allowed || allowed.has(t[AT.ACC]));
+  const distinct = new Set(termRows.map((t) => t[AT.TERM])).size;
+
+  els.aimaxKpi.replaceChildren();
+
+  const tiles = [
+    { label: 'Part du coût', value: totalCost ? ai.cost / totalCost : NaN, fmt: fmtPct,
+      note: `${compactly(fmtMoney, ai.cost)} sur ${compactly(fmtMoney, totalCost)}`, ref: null },
+    { label: 'Requêtes captées', value: distinct, fmt: fmtInt,
+      note: 'requêtes distinctes', ref: null },
+    { label: 'Clics', value: ai.clicks, fmt: fmtInt, ref: null,
+      note: `${compactly(fmtInt, ai.impr)} impressions` },
+    { label: 'Conversions', value: ai.conv, fmt: fmtNum1, ref: null,
+      note: `taux ${fmtPct(ai.clicks ? ai.conv / ai.clicks : NaN)}` },
+    { label: 'ROAS', value: ai.cost ? ai.value / ai.cost : NaN, fmt: fmtRatio, dir: 1,
+      ref: rest.cost ? rest.value / rest.cost : NaN, refLabel: 'hors AI Max' },
+    { label: 'CPA', value: ai.conv ? ai.cost / ai.conv : NaN, fmt: fmtMoney, dir: -1,
+      ref: rest.conv ? rest.cost / rest.conv : NaN, refLabel: 'hors AI Max' },
+  ];
+
+  for (const def of tiles) {
+    const tile = document.createElement('div');
+    tile.className = 'kpi';
+
+    const lab = document.createElement('div');
+    lab.className = 'kpi__label';
+    lab.textContent = def.label;
+    tile.appendChild(lab);
+
+    const val = document.createElement('div');
+    val.className = 'kpi__value';
+    val.textContent = compactly(def.fmt, def.value);
+    tile.appendChild(val);
+
+    const foot = document.createElement('div');
+    foot.className = 'kpi__foot';
+    const d = document.createElement('span');
+
+    if (def.ref !== null && isFinite(def.ref) && def.ref !== 0 && isFinite(def.value)) {
+      // Le point de comparaison n'est pas une période antérieure mais le reste
+      // du trafic des mêmes comptes : c'est la seule référence qui réponde à
+      // « AI Max fait-il mieux que ce que je faisais déjà ? ».
+      const pct = (def.value - def.ref) / Math.abs(def.ref);
+      const flat = Math.abs(pct) < 0.005;
+      const good = flat ? null : (pct > 0) === (def.dir > 0);
+      d.className = 'kpi__delta ' + (good === null ? 'kpi__delta--flat'
+        : good ? 'kpi__delta--good' : 'kpi__delta--bad');
+      const g = document.createElement('span');
+      g.textContent = flat ? '=' : (pct > 0 ? '↑' : '↓');
+      d.appendChild(g);
+      const t = document.createElement('span');
+      t.textContent = `${nf1.format(Math.abs(pct) * 100)} %`;
+      d.appendChild(t);
+      const em = document.createElement('em');
+      em.textContent = `vs ${def.refLabel}`;
+      d.appendChild(em);
+      d.title = `Reste du trafic des mêmes comptes : ${def.fmt(def.ref)}`;
+    } else {
+      d.className = 'kpi__delta kpi__delta--flat';
+      d.textContent = def.note || '—';
+    }
+    foot.appendChild(d);
+    tile.appendChild(foot);
+    els.aimaxKpi.appendChild(tile);
+  }
+}
+
+function renderAimaxMatchTypes() {
+  const a = S.aimax;
+  const m = AIMAX_METRICS[S.aimaxMetric];
+  const byType = aimaxByType();
+
+  const rows = a.matchTypes
+    .map((name) => ({ name, t: byType.get(name) || emptyAx() }))
+    .filter((r) => r.t.cost > 0 || r.t.clicks > 0)
+    .map((r) => ({ ...r, v: m.calc(r.t) }))
+    .filter((r) => isFinite(r.v))
+    .sort((x, y) => y.v - x.v);
+
+  const rank = rows.findIndex((r) => r.name === AIMAX_TYPE);
+  els.aimaxMtSub.textContent =
+    `${m.label} par type de correspondance, sur les comptes où AI Max tourne · `
+    + (rank >= 0
+        ? `AI Max au ${rank + 1}ᵉ rang sur ${rows.length}`
+        : `AI Max non mesurable sur cette mesure`)
+    + ` · ${aimaxScopeLabel()}`;
+
+  if (!rows.length) {
+    emptyState(els.aimaxMtBody, 'Aucune donnée sur cette sélection.');
+    return;
+  }
+
+  if (S.views.aimaxmt === 'table') {
+    renderTable(els.aimaxMtBody, {
+      scroll: true,
+      caption: 'Performances par type de correspondance',
+      cols: [
+        { key: 'name', label: 'Correspondance', text: true },
+        { key: 'impr', label: 'Impressions', fmt: (v) => fmtInt(v) },
+        { key: 'clicks', label: 'Clics', fmt: (v) => fmtInt(v) },
+        { key: 'cost', label: 'Coût', fmt: (v) => fmtMoney(v) },
+        { key: 'share', label: 'Part du coût', fmt: fmtPct },
+        { key: 'conv', label: 'Conv.', fmt: fmtNum1 },
+        { key: 'cpa', label: 'CPA', fmt: (v) => fmtMoney(v) },
+        { key: 'value', label: 'Valeur conv.', fmt: (v) => fmtMoney(v) },
+        { key: 'roas', label: 'ROAS', fmt: fmtRatio },
+      ],
+      rows: (() => {
+        const tot = rows.reduce((s, r) => s + r.t.cost, 0);
+        return [...rows].sort((x, y) => y.t.cost - x.t.cost).map((r) => ({
+          name: label(MATCH_TYPE_LABELS, r.name),
+          impr: r.t.impr, clicks: r.t.clicks, cost: r.t.cost,
+          share: tot ? r.t.cost / tot : NaN,
+          conv: r.t.conv, value: r.t.value,
+          cpa: r.t.conv ? r.t.cost / r.t.conv : NaN,
+          roas: r.t.cost ? r.t.value / r.t.cost : NaN,
+        }));
+      })(),
+    });
+    return;
+  }
+
+  // AI Max porte la teinte d'accent, les autres types une teinte neutre : la
+  // question posée ici est « AI Max face au reste », pas « sept catégories ».
+  renderBarChart(els.aimaxMtBody, {
+    items: rows.map((r) => ({
+      label: label(MATCH_TYPE_LABELS, r.name),
+      value: r.v,
+      // AI Max porte l'accent, le reste une teinte neutre : la question posée
+      // est « AI Max face au reste », pas « six catégories à comparer ».
+      color: r.name === AIMAX_TYPE ? seriesColor(1) : 'var(--neutral-bar)',
+      rows: [
+        { name: m.label, value: m.fmt(r.v) },
+        { name: 'Coût', value: fmtMoney(r.t.cost) },
+        { name: 'Clics', value: fmtInt(r.t.clicks) },
+        { name: 'Conversions', value: fmtNum1(r.t.conv) },
+        { name: 'ROAS', value: fmtRatio(r.t.cost ? r.t.value / r.t.cost : NaN) },
+      ],
+    })),
+    fmt: m.fmt, color: seriesColor(1), metricLabel: m.label,
+    // Sur un ROAS, les écarts se jouent autour de 1 : sans repère au seuil de
+    // rentabilité, six barres de longueur quasi identique ne diraient rien.
+    refLine: S.aimaxMetric === 'roas' ? { value: 1, label: 'seuil de rentabilité' } : null,
+    ariaLabel: `${m.label} par type de correspondance`,
+  });
+}
+
+/** Libellé du périmètre, pour les sous-titres. */
+function aimaxScopeLabel() {
+  const s = selectedAimaxAccounts();
+  return s ? `${s.size} compte(s) sur ${S.aimax.accounts.length}`
+           : `${S.aimax.accounts.length} comptes`;
+}
+
+function renderAimaxTerms() {
+  const a = S.aimax;
+  const allowed = selectedAimaxAccounts();
+  const srcFilter = S.aimaxSource;
+
+  const rows = a.terms.filter((t) =>
+    (!allowed || allowed.has(t[AT.ACC]))
+    && (srcFilter === 'all' || a.sources[t[AT.SRC]] === srcFilter));
+
+  // Une requête peut arriver par les deux sources : on la regroupe, sinon elle
+  // occuperait deux lignes du classement pour un même mot.
+  const merged = new Map();
+  for (const t of rows) {
+    const k = t[AT.TERM];
+    let e = merged.get(k);
+    if (!e) merged.set(k, (e = { term: k, ...emptyAx(), sources: new Set(), accounts: new Set() }));
+    e.impr += t[AT.IMPR];
+    e.clicks += t[AT.CLICKS];
+    e.cost += t[AT.COST];
+    e.conv += t[AT.CONV];
+    e.value += t[AT.VALUE];
+    e.sources.add(a.sources[t[AT.SRC]]);
+    e.accounts.add(a.accounts[t[AT.ACC]]);
+  }
+  const list = [...merged.values()].sort((x, y) => y.cost - x.cost);
+
+  // Les totaux annoncés viennent des cellules, exhaustives, et non de la liste
+  // plafonnée : sinon le ROAS affiché ici contredirait celui du bandeau, tous
+  // deux justes mais calculés sur des ensembles différents.
+  const exact = emptyAx();
+  for (const c of aimaxCells()) {
+    if (a.matchTypes[c[AX.MT]] !== AIMAX_TYPE) continue;
+    if (srcFilter !== 'all' && a.sources[c[AX.SRC]] !== srcFilter) continue;
+    addAx(exact, c, AX.IMPR);
+  }
+  const shownCost = list.reduce((s, r) => s + r.cost, 0);
+
+  els.aimaxTermsSub.textContent =
+    `${compactly(fmtMoney, exact.cost)} · ${fmtNum1(exact.conv)} conversions · `
+    + `ROAS ${fmtRatio(exact.cost ? exact.value / exact.cost : NaN)} · ${aimaxScopeLabel()}`
+    + (S.views.aimaxterms !== 'table' && list.length > AIMAX_TERM_ROWS
+        ? ` · graphique : les ${AIMAX_TERM_ROWS} plus coûteuses` : '')
+    + ` · liste détaillée : ${list.length.toLocaleString('fr-CH')} requête(s), soit `
+    + `${fmtPct(exact.cost ? shownCost / exact.cost : NaN)} de ce coût — au-delà, `
+    + `la traîne n'est pas publiée`;
+
+  if (!list.length) {
+    emptyState(els.aimaxTermsBody, 'Aucune requête captée sur cette sélection.');
+    return;
+  }
+
+  if (S.views.aimaxterms === 'table') {
+    renderTable(els.aimaxTermsBody, {
+      scroll: true,
+      caption: 'Requêtes captées par AI Max',
+      cols: [
+        { key: 'term', label: 'Requête', text: true },
+        { key: 'source', label: 'Source', text: true },
+        { key: 'impr', label: 'Impressions', fmt: (v) => fmtInt(v) },
+        { key: 'clicks', label: 'Clics', fmt: (v) => fmtInt(v) },
+        { key: 'cost', label: 'Coût', fmt: (v) => fmtMoney(v) },
+        { key: 'conv', label: 'Conv.', fmt: fmtNum1 },
+        { key: 'roas', label: 'ROAS', fmt: fmtRatio },
+      ],
+      rows: list.map((r) => ({
+        term: r.term,
+        source: [...r.sources].map(aimaxSourceLabel).join(' + '),
+        impr: r.impr, clicks: r.clicks, cost: r.cost, conv: r.conv,
+        roas: r.cost ? r.value / r.cost : NaN,
+        _sub: [...r.accounts].join(', '),
+      })),
+      // Le pied totalise ce que la table montre, pas le périmètre entier : une
+      // somme de colonnes doit correspondre aux lignes qu'on peut faire défiler.
+      foot: {
+        term: `Total des ${list.length} requêtes listées`,
+        impr: list.reduce((s, r) => s + r.impr, 0),
+        clicks: list.reduce((s, r) => s + r.clicks, 0),
+        cost: shownCost,
+        conv: list.reduce((s, r) => s + r.conv, 0),
+        roas: shownCost ? list.reduce((s, r) => s + r.value, 0) / shownCost : NaN,
+      },
+    });
+    return;
+  }
+
+  renderBarChart(els.aimaxTermsBody, {
+    items: list.slice(0, AIMAX_TERM_ROWS).map((r) => ({
+      label: r.term,
+      sub: [...r.accounts].join(', '),
+      value: r.cost,
+      rows: [
+        { name: 'Coût', value: fmtMoney(r.cost) },
+        { name: 'Clics', value: fmtInt(r.clicks) },
+        { name: 'Impressions', value: fmtInt(r.impr) },
+        { name: 'Conversions', value: fmtNum1(r.conv) },
+        { name: 'ROAS', value: fmtRatio(r.cost ? r.value / r.cost : NaN) },
+        { name: 'Source', value: [...r.sources].map(aimaxSourceLabel).join(' + ') },
+      ],
+    })),
+    fmt: fmtMoney, color: seriesColor(1), metricLabel: 'Coût',
+    ariaLabel: 'Requêtes captées par AI Max, des plus coûteuses aux moins coûteuses',
+  });
+}
+
+const AIMAX_SOURCE_LABELS = {
+  AI_MAX_BROAD_MATCH: 'Élargissement de mot-clé',
+  AI_MAX_KEYWORDLESS: 'Sans mot-clé',
+};
+const aimaxSourceLabel = (s) => AIMAX_SOURCE_LABELS[s] || s;
+
+function renderAimaxRamp() {
+  const a = S.aimax;
+  const cells = aimaxCells();
+  const n = a.months.length;
+
+  const ai = a.months.map(() => emptyAx());
+  const all = a.months.map(() => emptyAx());
+  for (const c of cells) {
+    addAx(all[c[AX.MONTH]], c, AX.IMPR);
+    if (a.matchTypes[c[AX.MT]] === AIMAX_TYPE) addAx(ai[c[AX.MONTH]], c, AX.IMPR);
+  }
+
+  const share = ai.map((t, i) => (all[i].cost ? t.cost / all[i].cost * 100 : NaN));
+  const roas = ai.map((t) => (t.cost ? t.value / t.cost : NaN));
+
+  // Le dernier mois est presque toujours incomplet : la fenêtre s'arrête à la
+  // veille de l'extraction. Une part reste lisible sur un mois partiel, un
+  // ROAS beaucoup moins — les conversions y remontent encore.
+  const partial = a.meta.end.slice(0, 7) === a.months[n - 1];
+
+  els.aimaxRampSub.textContent =
+    `Part du coût captée par AI Max, mois par mois · ${aimaxScopeLabel()}`
+    + (partial ? ` · ${fmtMonth(a.months[n - 1])} est un mois partiel, arrêté au `
+                 + `${fmtDateLong(a.meta.end)}` : '');
+
+  if (!cells.length) {
+    emptyState(els.aimaxRampBody, 'Aucune donnée sur cette sélection.');
+    return;
+  }
+
+  if (S.views.aimaxramp === 'table') {
+    renderTable(els.aimaxRampBody, {
+      caption: 'Montée en charge d\'AI Max',
+      cols: [
+        { key: 'month', label: 'Mois', text: true },
+        { key: 'cost', label: 'Coût AI Max', fmt: (v) => fmtMoney(v) },
+        { key: 'total', label: 'Coût total', fmt: (v) => fmtMoney(v) },
+        { key: 'share', label: 'Part', fmt: (v) => (isFinite(v) ? `${nf1.format(v)} %` : '—') },
+        { key: 'conv', label: 'Conv.', fmt: fmtNum1 },
+        { key: 'roas', label: 'ROAS', fmt: fmtRatio },
+      ],
+      rows: a.months.map((mo, i) => ({
+        month: fmtMonth(mo) + (partial && i === n - 1 ? ' (partiel)' : ''),
+        cost: ai[i].cost, total: all[i].cost, share: share[i],
+        conv: ai[i].conv, roas: roas[i],
+      })),
+    });
+    return;
+  }
+
+  renderLineChart(els.aimaxRampBody, {
+    xLabels: a.months.map(fmtMonth),
+    xFull: a.months.map((mo, i) =>
+      fmtMonth(mo) + (partial && i === n - 1 ? ' — mois partiel' : '')),
+    series: [{ key: 'share', name: 'Part du coût AI Max', color: seriesColor(1), values: share }],
+    fmt: (v) => (isFinite(v) ? `${nf1.format(v)} %` : '—'),
+    area: true, endLabel: true, height: 240, summable: false,
+    // Pas de repère vertical sur le dernier point : il se superposerait à
+    // l'étiquette de fin, et le sous-titre dit déjà que le mois est partiel.
+    ariaLabel: 'Part du coût captée par AI Max, mois par mois',
+  });
+}
+
+function renderAimaxCampaigns() {
+  const a = S.aimax;
+  const allowed = selectedAimaxAccounts();
+  const rows = a.campaigns.filter((c) => !allowed || allowed.has(c[AC.ACC]));
+
+  const withTraffic = rows.filter((c) => c[AC.COST] > 0);
+  const silent = rows.filter((c) => c[AC.ON] && c[AC.COST] <= 0);
+
+  els.aimaxCampSub.textContent =
+    `${rows.filter((c) => c[AC.ON]).length} campagne(s) avec AI Max activé · `
+    + `${withTraffic.length} captent effectivement du trafic`
+    + (silent.length
+        ? ` · ${silent.length} activée(s) sans une seule requête captée sur la période`
+        : '');
+
+  if (!withTraffic.length) {
+    emptyState(els.aimaxCampBody, silent.length
+        ? `AI Max est activé sur ${silent.length} campagne(s) mais n'a capté aucune `
+          + `requête sur la période.`
+        : 'Aucune campagne AI Max sur cette sélection.');
+    return;
+  }
+
+  const sorted = [...withTraffic].sort((x, y) => y[AC.COST] - x[AC.COST]);
+
+  if (S.views.aimaxcamp === 'table') {
+    renderTable(els.aimaxCampBody, {
+      scroll: true,
+      caption: 'Campagnes captant du trafic AI Max',
+      cols: [
+        { key: 'name', label: 'Campagne', text: true },
+        { key: 'clicks', label: 'Clics', fmt: (v) => fmtInt(v) },
+        { key: 'cost', label: 'Coût', fmt: (v) => fmtMoney(v) },
+        { key: 'conv', label: 'Conv.', fmt: fmtNum1 },
+        { key: 'roas', label: 'ROAS', fmt: fmtRatio },
+      ],
+      rows: sorted.map((c) => ({
+        name: c[AC.NAME], clicks: c[AC.CLICKS], cost: c[AC.COST], conv: c[AC.CONV],
+        roas: c[AC.COST] ? c[AC.VALUE] / c[AC.COST] : NaN,
+        _sub: a.accounts[c[AC.ACC]],
+      })),
+    });
+    return;
+  }
+
+  renderBarChart(els.aimaxCampBody, {
+    items: sorted.slice(0, 12).map((c) => ({
+      label: c[AC.NAME],
+      // Les campagnes portent des noms proches d'un compte à l'autre : le compte
+      // prend une seconde ligne sous le nom, pas seulement l'infobulle.
+      sub2: a.accounts[c[AC.ACC]],
+      value: c[AC.COST],
+      rows: [
+        { name: 'Coût AI Max', value: fmtMoney(c[AC.COST]) },
+        { name: 'Clics', value: fmtInt(c[AC.CLICKS]) },
+        { name: 'Conversions', value: fmtNum1(c[AC.CONV]) },
+        { name: 'ROAS', value: fmtRatio(c[AC.COST] ? c[AC.VALUE] / c[AC.COST] : NaN) },
+      ],
+    })),
+    fmt: fmtMoney, color: seriesColor(1), metricLabel: 'Coût AI Max',
+    ariaLabel: 'Campagnes captant le plus de trafic AI Max',
+  });
+}
+
+function renderAimaxSection() {
+  if (S.aimaxState !== 'ready') return;
+  const a = S.aimax;
+  els.aimaxSection.hidden = false;
+
+  const allowed = selectedAimaxAccounts();
+  const scopedCampaigns = a.campaigns.filter(
+    (c) => (!allowed || allowed.has(c[AC.ACC])) && c[AC.ON]);
+
+  els.aimaxMeta.textContent =
+    `${fmtDateLong(a.meta.start)} – ${fmtDateLong(a.meta.end)} · ${a.meta.days} jours · `
+    + `${scopedCampaigns.length} campagne(s) AI Max`
+    + (allowed ? '' : ` sur ${a.meta.campaigns_search} campagnes Recherche du MCC`)
+    + ` · fenêtre fixe, indépendante du filtre de période`;
+
+  els.aimaxNote.replaceChildren();
+  const notes = [];
+
+  if (aimaxOutOfScope()) {
+    // Le message ne paraît qu'une fois, ici : répété dans les quatre cartes
+    // avec la liste des comptes, il noierait la section.
+    notes.push(aimaxScopeMsg());
+  } else {
+    // Ce que le lecteur ne peut pas deviner et qui change la lecture des parts.
+    notes.push(
+      `Le périmètre est celui des ${a.accounts.length} comptes où AI Max est activé, `
+      + `pas le MCC entier : ailleurs sa part serait diluée dans un total sans rapport.`
+    );
+    const ai = aimaxByType().get(AIMAX_TYPE) || emptyAx();
+    const kwl = aimaxCells().filter((c) => a.sources[c[AX.SRC]] === 'AI_MAX_KEYWORDLESS');
+    if (kwl.length) {
+      const kc = kwl.reduce((s, c) => s + c[AX.COST], 0);
+      const kv = kwl.reduce((s, c) => s + c[AX.VALUE], 0);
+      notes.push(
+        `Deux sources se cachent derrière « AI Max » : l'élargissement d'un mot-clé `
+        + `existant, et le sans-mot-clé — du trafic qu'aucun mot-clé ne déclenchait. `
+        + `Ce dernier pèse ${compactly(fmtMoney, kc)} `
+        + `(${fmtPct(ai.cost ? kc / ai.cost : NaN)} d'AI Max) pour un ROAS de `
+        + `${fmtRatio(kc ? kv / kc : NaN)}.`
+      );
+    }
+  }
+
+  for (const n of notes) {
+    const s = document.createElement('span');
+    s.textContent = n;
+    els.aimaxNote.appendChild(s);
+  }
+  els.aimaxNote.hidden = !notes.length;
+
+  if (aimaxOutOfScope()) {
+    const short = 'Hors périmètre AI Max.';
+    els.aimaxKpi.replaceChildren();
+    els.aimaxMtSub.textContent = '';
+    els.aimaxTermsSub.textContent = '';
+    els.aimaxRampSub.textContent = '';
+    els.aimaxCampSub.textContent = '';
+    emptyState(els.aimaxMtBody, short);
+    emptyState(els.aimaxTermsBody, short);
+    emptyState(els.aimaxRampBody, short);
+    emptyState(els.aimaxCampBody, short);
+    return;
+  }
+
+  renderAimaxKpis();
+  renderAimaxMatchTypes();
+  renderAimaxTerms();
+  renderAimaxRamp();
+  renderAimaxCampaigns();
+}
+
+async function loadAimax() {
+  if (S.aimaxState !== 'idle') return;
+  S.aimaxState = 'loading';
+  try {
+    const res = await fetch('data/aimax.json', { cache: 'no-cache' });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    S.aimax = await res.json();
+  } catch (err) {
+    // Absence de fichier ≠ erreur : un dépôt cloné sans exécuter le
+    // récupérateur n'a pas de données AI Max. La section reste masquée
+    // plutôt que d'afficher un cadre vide.
+    S.aimaxState = 'error';
+    console.info(`AI Max indisponible (${err.message}) — section masquée. `
+      + `Générez data/aimax.json avec « python scripts/fetch_aimax.py ».`);
+    return;
+  }
+  if (!S.aimax || !Array.isArray(S.aimax.cells) || !S.aimax.cells.length) {
+    S.aimaxState = 'error';
+    return;
+  }
+  S.aimaxState = 'ready';
+
+  fillSelectFrom(els.aimaxMetric, AIMAX_METRICS, S.aimaxMetric);
+  els.aimaxMetric.addEventListener('change', () => {
+    S.aimaxMetric = els.aimaxMetric.value;
+    renderAimaxSection();
+  });
+
+  const sources = S.aimax.sources.filter((s) => s.startsWith('AI_MAX_'));
+  // Un lien peut porter une source absente de ce jeu de données : on retombe
+  // sur « toutes » plutôt que d'afficher une carte vide sans raison visible.
+  if (S.aimaxSource !== 'all' && !sources.includes(S.aimaxSource)) S.aimaxSource = 'all';
+  buildSegmented(els.aimaxSource,
+    [{ key: 'all', label: 'Toutes sources' },
+     ...sources.map((s) => ({ key: s, label: aimaxSourceLabel(s) }))],
+    () => S.aimaxSource,
+    (k) => { S.aimaxSource = k; renderAimaxSection(); });
+
+  buildViewToggles();
+  renderAimaxSection();
 }
 
 /* ── Rendu : répartition par compte ───────────────────────────────────────── */
@@ -3719,6 +4374,8 @@ function writeHash() {
   if (S.topMetric !== 'cost') p.set('t', S.topMetric);
   if (S.mixDim !== 'device') p.set('x', S.mixDim);
   if (S.marginMeasure !== 'margin') p.set('mg', S.marginMeasure);
+  if (S.aimaxMetric !== 'cost') p.set('am', S.aimaxMetric);
+  if (S.aimaxSource !== 'all') p.set('as', S.aimaxSource);
   if (S.liveAction !== null) p.set('ac', S.liveAction);
   // Permet de partager un lien qui ouvre directement la section sémantique,
   // sans obliger le destinataire à trouver puis cliquer le bouton de chargement.
@@ -3754,6 +4411,9 @@ function readHash() {
   if (['account', 'total'].includes(p.get('v'))) S.tsMode = p.get('v');
   if (METRICS[p.get('t')]) S.topMetric = p.get('t');
   if (['device', 'network'].includes(p.get('x'))) S.mixDim = p.get('x');
+  if (AIMAX_METRICS[p.get('am')]) S.aimaxMetric = p.get('am');
+  // La source est validée à l'arrivée du fichier, seul juge de ce qui existe.
+  if (p.get('as')) S.aimaxSource = p.get('as');
   if (MARGIN_MEASURES[p.get('mg')]) {
     S.marginMeasure = p.get('mg');
     S.marginSort = { col: S.marginMeasure === 'rate' ? 'marginRate' : 'margin', dir: -1 };
@@ -3831,6 +4491,7 @@ function doRender() {
   renderEfficiency(rows);
   renderTop(rows);
   renderMargin(rows);
+  renderAimaxSection();
   renderMix(sel);
   renderDetail(rows, sel);
   // La section sémantique suit le filtre de comptes, mais pas celui de période :
@@ -4582,6 +5243,12 @@ function cacheEls() {
     mixBody: 'mix-body', mixSub: 'mix-sub', mixDim: 'mix-dim',
     marginBody: 'margin-body', marginSub: 'margin-sub',
     marginMeasure: 'margin-measure', marginNote: 'margin-note',
+    aimaxSection: 'aimax-section', aimaxMeta: 'aimax-meta', aimaxNote: 'aimax-note',
+    aimaxKpi: 'aimax-kpi', aimaxMetric: 'aimax-metric', aimaxSource: 'aimax-source',
+    aimaxMtBody: 'aimax-mt-body', aimaxMtSub: 'aimax-mt-sub',
+    aimaxTermsBody: 'aimax-terms-body', aimaxTermsSub: 'aimax-terms-sub',
+    aimaxRampBody: 'aimax-ramp-body', aimaxRampSub: 'aimax-ramp-sub',
+    aimaxCampBody: 'aimax-camp-body', aimaxCampSub: 'aimax-camp-sub',
     detailBody: 'detail-body', detailSub: 'detail-sub', exportCsv: 'export-csv',
     semMeta: 'sem-meta', semStatus: 'sem-status', semLoader: 'sem-loader',
     semLoad: 'sem-load', semLoadNote: 'sem-load-note', semContent: 'sem-content',
@@ -4754,6 +5421,11 @@ async function init() {
   wireControls();
   onFilterChange();
   setView(S.view);
+
+  // Chargé sans bouton : l'agrégat AI Max pèse une fraction de data.json, déjà
+  // chargé d'office. La section se dévoile seule quand le fichier arrive, et
+  // reste masquée s'il n'existe pas.
+  loadAimax();
 
   if (S.autoLoadTerms) loadTerms();
 }

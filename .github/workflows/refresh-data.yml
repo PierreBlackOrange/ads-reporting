@@ -63,15 +63,29 @@ jobs:
           GOOGLE_ADS_LOGIN_CUSTOMER_ID: ${{ secrets.GOOGLE_ADS_LOGIN_CUSTOMER_ID }}
         run: python scripts/fetch_ads_data.py --days "${{ github.event.inputs.days || '180' }}"
 
+      # Jeu de données distinct, fenêtre propre de 90 jours. « continue-on-error »
+      # parce qu'un échec ici ne doit pas priver le rapport de sa mise à jour
+      # principale : la section AI Max se masque d'elle-même si le fichier manque.
+      - name: Récupérer les données AI Max
+        if: steps.check.outputs.ready == 'true'
+        continue-on-error: true
+        env:
+          GOOGLE_ADS_DEVELOPER_TOKEN:   ${{ secrets.GOOGLE_ADS_DEVELOPER_TOKEN }}
+          GOOGLE_ADS_CLIENT_ID:         ${{ secrets.GOOGLE_ADS_CLIENT_ID }}
+          GOOGLE_ADS_CLIENT_SECRET:     ${{ secrets.GOOGLE_ADS_CLIENT_SECRET }}
+          GOOGLE_ADS_REFRESH_TOKEN:     ${{ secrets.GOOGLE_ADS_REFRESH_TOKEN }}
+          GOOGLE_ADS_LOGIN_CUSTOMER_ID: ${{ secrets.GOOGLE_ADS_LOGIN_CUSTOMER_ID }}
+        run: python scripts/fetch_aimax.py --days 90 --max-terms 4000
+
       - name: Commiter si les données ont changé
         if: steps.check.outputs.ready == 'true'
         run: |
-          if git diff --quiet -- data/data.json; then
+          if git diff --quiet -- data/data.json data/aimax.json; then
             echo "Aucun changement."
             exit 0
           fi
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add data/data.json
+          git add data/data.json data/aimax.json
           git commit -m "Mise à jour automatique des données Google Ads"
           git push

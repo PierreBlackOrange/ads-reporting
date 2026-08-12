@@ -17,6 +17,11 @@ google-ads.yaml
 # Pour le publier délibérément : git add -f data/terms.json
 data/terms.json
 
+# aimax.json porte la même nature de données : les requêtes captées par AI Max
+# sont elles aussi des recherches réellement tapées. Même règle, même geste
+# explicite pour les publier : git add -f data/aimax.json
+data/aimax.json
+
 # ── Python ──────────────────────────────────────────────────────────────────
 __pycache__/
 *.py[cod]

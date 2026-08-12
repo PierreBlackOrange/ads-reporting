@@ -16,6 +16,7 @@
   --text-muted:     #898781;   /* axes, libellés */
   --gridline:       #e1e0d9;   /* filet, 1px, plein */
   --baseline:       #c3c2b7;
+  --neutral-bar:    #b5b4aa;   /* marque hors-sujet : présente, jamais lue en premier */
   --border:         rgba(11, 11, 11, 0.10);
   --wash:           rgba(11, 11, 11, 0.04);   /* survol fantôme */
   --wash-strong:    rgba(11, 11, 11, 0.07);
@@ -66,6 +67,7 @@
     --text-muted:     #898781;
     --gridline:       #2c2c2a;
     --baseline:       #383835;
+    --neutral-bar:    #56564f;
     --border:         rgba(255, 255, 255, 0.10);
     --wash:           rgba(255, 255, 255, 0.05);
     --wash-strong:    rgba(255, 255, 255, 0.09);
@@ -106,6 +108,7 @@
   --text-muted:     #898781;
   --gridline:       #2c2c2a;
   --baseline:       #383835;
+  --neutral-bar:    #56564f;
   --border:         rgba(255, 255, 255, 0.10);
   --wash:           rgba(255, 255, 255, 0.05);
   --wash-strong:    rgba(255, 255, 255, 0.09);

@@ -99,6 +99,76 @@ d'utilisation de Google Ads. Pour le publier délibérément :
 
 ---
 
+## Section AI Max
+
+```bash
+python scripts/fetch_aimax.py --days 90 --max-terms 4000
+python scripts/probe_aimax.py     # que l'API expose-t-elle sur AI Max ?
+```
+
+Ce que capte AI Max, ce que ça convertit, et à quel ROAS — face aux autres types
+de correspondance. Chargée sans bouton : l'agrégat pèse une fraction de
+`data.json`. La section **se masque d'elle-même** si le fichier n'existe pas.
+
+### D'où viennent les données
+
+AI Max est récent et son modèle de données ne se devine pas. `probe_aimax.py`
+interroge `GoogleAdsFieldService`, qui décrit l'API elle-même, plutôt que de
+supposer un nom de champ. Trois points d'accroche en sont ressortis :
+
+| Champ | Ce qu'il donne |
+|---|---|
+| `campaign.ai_max_setting.enable_ai_max` | activé ou non, par campagne |
+| `segments.search_term_match_type = AI_MAX` | requêtes appariées par AI Max |
+| `segments.search_term_match_source` | `AI_MAX_BROAD_MATCH` (élargissement d'un mot-clé) ou `AI_MAX_KEYWORDLESS` (trafic sans aucun mot-clé) |
+
+Les deux segments partitionnent les mêmes lignes — leurs totaux de coût
+coïncident au centime, vérifié avant de les croiser. Contrairement à l'action de
+conversion, les croiser ne duplique donc aucune dépense.
+
+Deux détections plutôt qu'une : le réglage lu est l'état **actuel**, si bien
+qu'une campagne activée puis désactivée pendant la fenêtre n'y figure plus. Le
+trafic effectivement apparié en `AI_MAX` la rattrape.
+
+### Le périmètre
+
+Ce sont les **comptes où AI Max est activé**, pas le MCC entier. Comparer AI Max
+aux autres correspondances n'a de sens qu'à l'intérieur de ces comptes : ailleurs
+sa part serait diluée dans un total sans rapport, et d'autres devises entreraient
+dans l'agrégat. Le bandeau de la section le dit et nomme les comptes retenus.
+
+La fenêtre est fixe (90 jours) et **ne suit pas le filtre de période**, comme les
+sections sémantique et types de correspondance qui reposent sur le même genre
+d'agrégat pré-calculé. Le filtre de comptes, lui, s'applique partout.
+
+### Lectures à ne pas fausser
+
+Les totaux annoncés viennent des **cellules agrégées, exhaustives**, jamais de la
+liste de requêtes plafonnée : autrement le ROAS d'une carte contredirait celui du
+bandeau, tous deux justes mais calculés sur des ensembles différents. La liste
+détaillée annonce la part du coût qu'elle couvre ; le pied de tableau totalise ce
+que la table montre, pas le périmètre.
+
+Sur le ROAS, les écarts se jouent autour de 1 : le graphique porte un repère au
+seuil de rentabilité. Les barres partent toujours de zéro — tronquer l'échelle
+pour « voir mieux » fausserait les longueurs.
+
+Le dernier mois de la montée en charge est presque toujours **partiel** (la
+fenêtre s'arrête à la veille de l'extraction) et le sous-titre le signale. Une
+part reste lisible sur un mois incomplet ; un ROAS beaucoup moins, les
+conversions y remontant encore.
+
+`NEAR_EXACT` et `NEAR_PHRASE` sont traduits en « variante proche » et non en
+« exact » / « expression » : ce sont des variantes que Google apparie sans que
+l'annonceur les ait écrites, les confondre avec les ciblages déclarés serait un
+contresens.
+
+⚠️ **`data/aimax.json` est gitignoré par défaut**, pour la même raison que
+`terms.json` : les requêtes captées sont des recherches réellement tapées. Pour
+le publier délibérément : `git add -f data/aimax.json`.
+
+---
+
 ## ⚠️ Avant de publier : ce dépôt est public
 
 Sur un dépôt public, **toute personne connaissant l'URL voit vos données** :
