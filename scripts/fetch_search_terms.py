@@ -256,7 +256,12 @@ def main() -> int:
     # (termIdx, kwIdx, matchIdx, accIdx) → totaux + coût par mois
     pairs: dict[tuple, dict] = {}
     # n-gramme → [coût récent, coût précédent, clics récents, clics précédents, {termes}]
+    # Agrégat global, qui sert à choisir quels n-grammes publier.
     ngrams: dict[str, list] = collections.defaultdict(lambda: [0.0, 0.0, 0, 0, set()])
+    # (n-gramme, compte) → mêmes compteurs, pour que le filtre de comptes de la
+    # barre du haut s'applique aussi à ce graphique. Sans cette dimension, le
+    # n-gramme resterait figé sur l'ensemble des comptes quel que soit le filtre.
+    ngrams_acc: dict[tuple, list] = collections.defaultdict(lambda: [0.0, 0.0, 0, 0])
 
     # Vélocité de dérive : (semaine, correspondance, enchères) → agrégats.
     # Le recouvrement moyen est pondéré par les clics — une requête à 3 000 clics
@@ -332,7 +337,7 @@ def main() -> int:
             wk = week_of(date)
             weeks.add(wk)
             ov = lexical_overlap(term, keyword)
-            dslot = drift[(wk, match, bid)]
+            dslot = drift[(wk, match, bid, ai)]
             dslot[0] += clicks
             dslot[1] += cost
             dslot[2] += conv
@@ -362,12 +367,17 @@ def main() -> int:
                         continue
                     seen.add(g)
                     e = ngrams[g]
+                    ea = ngrams_acc[(g, ai)]
                     if recent:
                         e[0] += cost
                         e[2] += clicks
+                        ea[0] += cost
+                        ea[2] += clicks
                     else:
                         e[1] += cost
                         e[3] += clicks
+                        ea[1] += cost
+                        ea[3] += clicks
                     if len(e[4]) < 6:
                         e[4].add(term)
 
@@ -421,19 +431,36 @@ def main() -> int:
     ng_rows.sort(key=lambda r: -abs(r[1] - r[2]))
     ng_rows = ng_rows[:600]
 
+    # Ventilation par compte des n-grammes retenus. Un n-gramme publié l'est
+    # avec la totalité de ses comptes, si bien que filtrer donne un résultat
+    # exact — pas une estimation. Le seul manque est la queue des n-grammes non
+    # retenus, identique avec ou sans filtre.
+    kept_grams = {r[0] for r in ng_rows}
+    ng_by_acc = [
+        [g, ai, round(v[0], 2), round(v[1], 2), v[2], v[3]]
+        for (g, ai), v in ngrams_acc.items()
+        if g in kept_grams and (v[2] + v[3]) > 0
+    ]
+
     # ── Vélocité de dérive publiée ───────────────────────────────────────────
     week_list = sorted(weeks)
     wpos = {w: i for i, w in enumerate(week_list)}
     MIN_WEEK_CLICKS = 30   # sous ce volume la moyenne hebdomadaire est du bruit
-    drift_rows = []
-    for (wk, match, bid), (clicks, cost, conv, ovsum) in sorted(drift.items()):
-        if clicks < MIN_WEEK_CLICKS:
-            continue
-        drift_rows.append([
-            wpos[wk], match_idx.get(match), bid,
-            clicks, round(cost, 2), round(conv, 2),
-            round(ovsum / clicks, 4),
-        ])
+    # Les clics et la somme pondérée sont publiés bruts, pas la moyenne : le
+    # navigateur doit pouvoir ré-agréger sur une sélection de comptes, et une
+    # moyenne de moyennes serait fausse dès que les volumes diffèrent.
+    #
+    # Le seuil de volume n'est PAS appliqué ici. Avec la dimension compte, une
+    # cellule descend souvent sous 30 clics alors que la semaine, tous comptes
+    # confondus, en compte largement assez ; filtrer maintenant ferait sommer au
+    # navigateur des semaines déjà amputées. Le seuil s'applique après
+    # ré-agrégation, côté affichage.
+    drift_rows = [
+        [wpos[wk], match_idx.get(match), bid, ai,
+         clicks, round(cost, 2), round(conv, 2), round(ovsum, 2)]
+        for (wk, match, bid, ai), (clicks, cost, conv, ovsum) in sorted(drift.items())
+        if clicks > 0
+    ]
 
     dataset = {
         "meta": {
@@ -454,6 +481,7 @@ def main() -> int:
             "min_clicks_ngram": MIN_CLICKS,
             "min_week_clicks": MIN_WEEK_CLICKS,
             "drift_rows": len(drift_rows),
+            "ngrams_by_account_rows": len(ng_by_acc),
             "overlap_method": "jaccard racinisé (pluriels, féminins, concaténation)",
             "min_clicks": args.min_clicks,
             "excluded_rows": excluded_rows,
@@ -465,6 +493,7 @@ def main() -> int:
         "months": month_list,
         "weeks": week_list,
         "drift": drift_rows,
+        "ngramsByAccount": ng_by_acc,
         "terms": [terms_idx.values[i] for i in used_t],
         "keywords": [kw_idx.values[i] for i in used_k],
         "pairs": out_pairs,

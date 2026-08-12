@@ -1917,15 +1917,46 @@ Object.assign(S, {
 function termPairs() {
   const t = S.terms;
   if (!t) return [];
-  if (!S.accounts.size) return t.pairs;
-  // terms.json nomme les comptes ; data.json les indexe. On rapproche par nom.
-  const allowed = new Set(
-    [...S.accounts].map((i) => S.data.accounts[i] && S.data.accounts[i].name)
-  );
-  return t.pairs.filter((p) => allowed.has(t.accounts[p[P.ACC]]));
+  const allowed = selectedTermAccounts();
+  if (!allowed) return t.pairs;
+  return t.pairs.filter((p) => allowed.has(p[P.ACC]));
 }
 
 const isEnriched = () => !!(S.terms && S.terms.meta && S.terms.meta.enriched);
+
+/**
+ * Indices de comptes de terms.json retenus par le filtre de la barre du haut.
+ *
+ * data.json indexe les comptes sur les 86 du MCC, terms.json seulement sur les
+ * comptes récupérés : les deux numérotations ne coïncident pas, le rapprochement
+ * se fait par nom. Retourne null quand aucun filtre n'est actif, ce qui évite un
+ * test d'appartenance inutile dans les boucles.
+ */
+function selectedTermAccounts() {
+  const t = S.terms;
+  if (!t || !S.accounts.size) return null;
+  const names = new Set(
+    [...S.accounts].map((i) => S.data.accounts[i] && S.data.accounts[i].name)
+  );
+  return new Set(t.accounts.map((n, i) => (names.has(n) ? i : -1)).filter((i) => i >= 0));
+}
+
+/** Message commun quand le filtre ne laisse aucun compte présent dans terms.json. */
+function noAccountInScope() {
+  const t = S.terms;
+  return `Aucun des comptes filtrés n'est présent dans ce jeu de données. `
+    + `Il ne couvre que : ${t.accounts.join(', ')}.`;
+}
+
+/**
+ * État vide qui distingue « le filtre exclut tout » de « pas de données ».
+ * Sans cette distinction, filtrer sur un compte absent de terms.json donnerait
+ * un graphique vide sans dire pourquoi.
+ */
+function emptyScoped(container, fallback) {
+  const allowed = selectedTermAccounts();
+  emptyState(container, allowed && !allowed.size ? noAccountInScope() : fallback);
+}
 
 /* ── Dérive sémantique ────────────────────────────────────────────────────── */
 
@@ -1969,7 +2000,7 @@ function renderDrift() {
 
   if (!pairs.length) {
     els.driftSub.textContent = 'Aucune paire mesurable sur cette sélection.';
-    emptyState(els.driftBody, 'Aucune donnée sur cette sélection.');
+    emptyScoped(els.driftBody, 'Aucune donnée sur cette sélection.');
     return;
   }
 
@@ -2072,7 +2103,7 @@ function renderIntent() {
 
   if (!pairs.length) {
     els.intentSub.textContent = 'Intentions non classifiées.';
-    emptyState(
+    emptyScoped(
       els.intentBody,
       'Aucune classification d\'intention — lancez python scripts/classify_terms.py '
       + '(par règles, sans clé API) ou python scripts/enrich_terms.py (par modèle).'
@@ -2311,18 +2342,50 @@ function renderDivergingBars(container, cfg) {
 function renderNgrams() {
   const t = S.terms;
   const m = NGRAM_METRICS[S.ngramMetric];
-  const all = (t.ngrams || []).map((g) => ({
-    label: g[0],
-    recent: g[m.recent],
-    prev: g[m.prev],
-    delta: g[m.recent] - g[m.prev],
-    examples: g[5] || [],
-  })).filter((r) => r.delta !== 0);
+  const allowed = selectedTermAccounts();
+
+  // Colonnes de ngramsByAccount : [gramme, compte, coûtRécent, coûtPréc,
+  // clicsRécents, clicsPréc]. m.recent/m.prev indexent la table globale, d'où
+  // le décalage de 1 sur la table par compte.
+  const col = { recent: m.recent + 1, prev: m.prev + 1 };
+  const examples = new Map((t.ngrams || []).map((g) => [g[0], g[5] || []]));
+
+  let all;
+  if (allowed && t.ngramsByAccount) {
+    if (!allowed.size) {
+      els.ngramSub.textContent = 'Hors périmètre.';
+      emptyState(els.ngramBody, noAccountInScope());
+      return;
+    }
+    // Ré-agrégation sur les comptes retenus. Exacte pour les n-grammes publiés :
+    // chacun l'est avec la totalité de ses comptes.
+    const acc = new Map();
+    for (const row of t.ngramsByAccount) {
+      if (!allowed.has(row[1])) continue;
+      const cur = acc.get(row[0]) || [0, 0];
+      cur[0] += row[col.recent];
+      cur[1] += row[col.prev];
+      acc.set(row[0], cur);
+    }
+    all = [...acc.entries()].map(([label, [recent, prev]]) => ({
+      label, recent, prev, delta: recent - prev, examples: examples.get(label) || [],
+    })).filter((r) => r.delta !== 0);
+  } else {
+    all = (t.ngrams || []).map((g) => ({
+      label: g[0],
+      recent: g[m.recent],
+      prev: g[m.prev],
+      delta: g[m.recent] - g[m.prev],
+      examples: g[5] || [],
+    })).filter((r) => r.delta !== 0);
+  }
 
   const mid = t.meta.midpoint;
+  const scope = allowed ? `${allowed.size} compte(s) filtré(s)` : 'tous comptes';
   els.ngramSub.textContent =
     `Bi- et trigrammes des termes de recherche · ${m.label} depuis le ${fmtDateShort(mid)} `
-    + `face à la période précédente · ${t.meta.ngrams_total.toLocaleString('fr-CH')} n-grammes observés, `
+    + `face à la période précédente · ${scope} · `
+    + `${t.meta.ngrams_total.toLocaleString('fr-CH')} n-grammes observés, `
     + `minimum ${t.meta.min_clicks_ngram} clics`;
 
   if (S.views.ngram === 'table') {
@@ -2657,7 +2720,8 @@ function renderCannib() {
   const pairs = termPairs();
   const m = CANNIB_METRIC[S.cannibMetric];
   if (!pairs.length) {
-    emptyState(els.cannibBody, 'Aucune donnée sur cette sélection.');
+    els.cannibSub.textContent = 'Hors périmètre.';
+    emptyScoped(els.cannibBody, 'Aucune donnée sur cette sélection.');
     return;
   }
 
@@ -2721,8 +2785,17 @@ function renderCannib() {
     return;
   }
 
+  // Un type absent de la sélection laisserait une ligne et une colonne
+  // entièrement vides : on les retire plutôt que d'afficher une grille de tirets.
+  const present = t.matchTypes
+    .map((_, i) => i)
+    .filter((i) => raw.cells[i].some((v) => v > 0)
+      || raw.cells.some((row) => row[i] > 0));
+
   renderHeatmap(els.cannibBody, {
-    rows: t.matchTypes, cols: t.matchTypes, cells,
+    rows: present.map((i) => t.matchTypes[i]),
+    cols: present.map((i) => t.matchTypes[i]),
+    cells: present.map((i) => present.map((j) => cells[i][j])),
     fmt: m.share ? m.fmt : (v) => compactly(m.fmt, v),
     // En part de ligne chaque total vaut 100 % : l'afficher n'apprendrait rien.
     hideTotal: !!m.share,
@@ -2743,37 +2816,54 @@ function renderVelocity() {
   }
 
   const bidFilter = S.velocityBid;
+  const allowed = selectedTermAccounts();
+  if (allowed && !allowed.size) {
+    els.velocitySub.textContent = 'Hors périmètre.';
+    emptyState(els.velocityBody, noAccountInScope());
+    return;
+  }
+
   const weeks = t.weeks || [];
-  // (correspondance, semaine) → [clics, somme pondérée]
+  // Colonnes de drift : [semaine, corresp., enchères, compte, clics, coût,
+  // conv, somme(recouvrement × clics)]. La somme pondérée est publiée brute :
+  // on ne peut moyenner qu'après avoir ré-agrégé, sinon une moyenne de moyennes
+  // donnerait le même poids à un compte de 20 clics qu'à un compte de 9 000.
   const acc = new Map();
-  for (const [wi, mi, bi, clicks, , , ov] of drift) {
+  const seenMatch = new Set();
+  for (const [wi, mi, bi, ai, clicks, , , ovsum] of drift) {
     if (bidFilter !== 'all' && String(bi) !== bidFilter) continue;
+    if (allowed && !allowed.has(ai)) continue;
+    seenMatch.add(mi);
     const k = `${mi}|${wi}`;
     const cur = acc.get(k) || [0, 0];
     cur[0] += clicks;
-    cur[1] += ov * clicks;
+    cur[1] += ovsum;
     acc.set(k, cur);
   }
 
-  const usedMatch = [...new Set(drift.map((d) => d[1]))];
+  const usedMatch = [...seenMatch].sort((a, b) => a - b);
   const series = usedMatch.map((mi, k) => ({
     key: String(mi),
     name: t.matchTypes[mi],
     color: seriesColor(k + 1),
     values: weeks.map((_, wi) => {
       const cur = acc.get(`${mi}|${wi}`);
-      // Une semaine sans volume suffisant n'a pas de moyenne : on coupe la
-      // courbe plutôt que de tracer un zéro qui se lirait comme une dérive totale.
-      return cur && cur[0] > 0 ? Math.round(cur[1] / cur[0] * 100) : null;
+      // Le seuil s'applique ici, sur le volume ré-agrégé de la sélection —
+      // pas à la source, où chaque cellule est découpée par compte. Sous ce
+      // volume la courbe est coupée plutôt que tracée à zéro, qui se lirait
+      // comme une dérive totale.
+      if (!cur || cur[0] < (t.meta.min_week_clicks || 30)) return null;
+      return Math.round(cur[1] / cur[0] * 100);
     }),
   })).filter((s) => s.values.some((v) => v !== null));
 
   const bidLabel = bidFilter === 'all'
     ? 'toutes stratégies'
     : (t.biddingTypes || [])[Number(bidFilter)] || '';
+  const scope = allowed ? `${allowed.size} compte(s) filtré(s)` : 'tous comptes';
   els.velocitySub.textContent =
     `Recouvrement lexical moyen, pondéré par les clics, semaine par semaine · ${bidLabel} · `
-    + `minimum ${t.meta.min_week_clicks} clics par semaine. `
+    + `${scope} · minimum ${t.meta.min_week_clicks} clics par semaine. `
     + `Une courbe qui baisse signifie un ciblage qui s'élargit.`;
 
   if (S.views.velocity === 'table') {
@@ -2807,7 +2897,8 @@ function renderMarginal() {
   const t = S.terms;
   const pairs = termPairs();
   if (!pairs.length) {
-    emptyState(els.marginalBody, 'Aucune donnée sur cette sélection.');
+    els.marginalSub.textContent = 'Hors périmètre.';
+    emptyScoped(els.marginalBody, 'Aucune donnée sur cette sélection.');
     return;
   }
 
