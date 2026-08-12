@@ -34,6 +34,15 @@
   --seq-250: #86b6ef;
   --seq-450: #2a78d6;
 
+  /* Rampe de carte de chaleur : une seule teinte, clair → foncé. Six paliers
+     de la rampe bleue, du plus clair au plus foncé sur surface claire. */
+  --heat-1: #cde2fb;
+  --heat-2: #9ec5f4;
+  --heat-3: #6da7ec;
+  --heat-4: #2a78d6;
+  --heat-5: #1c5cab;
+  --heat-6: #0d366b;
+
   /* ── Delta / statut ── */
   --delta-good: #006300;
   --delta-bad:  #d03b3b;
@@ -72,6 +81,16 @@
 
     --seq-250: #184f95;
     --seq-450: #3987e5;
+
+    /* Sur surface sombre la rampe s'inverse : la valeur faible doit se fondre
+       dans le fond, la valeur forte ressortir. Une rampe clair → foncé y
+       rendrait les cellules les plus fortes invisibles. */
+    --heat-1: #184f95;
+    --heat-2: #1c5cab;
+    --heat-3: #256abf;
+    --heat-4: #3987e5;
+    --heat-5: #6da7ec;
+    --heat-6: #9ec5f4;
 
     --delta-good: #0ca30c;
     --delta-bad:  #d03b3b;
@@ -773,3 +792,8 @@ table.data tfoot td {
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { transition-duration: 0.01ms !important; scroll-behavior: auto; }
 }
+.heatmap th.txt, .heatmap td.heat-cell { white-space: nowrap; }
+.heatmap thead th { text-align: right; }
+.heatmap tbody th { text-align: left; font-weight: 500; color: var(--text-primary);
+  font-size: 13px; text-transform: none; letter-spacing: 0; }
+.heat-cell { font-variant-numeric: tabular-nums; transition: none; }

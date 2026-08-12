@@ -2355,6 +2355,547 @@ function renderNgrams() {
   });
 }
 
+/* ════════════════════════════════════════════════════════════════════════════
+   Types de correspondance
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+const CANNIB_METRIC = {
+  // « Part de la ligne » est la lecture actionnable : en valeur absolue, le type
+  // qui dépense le plus domine forcément la matrice, ce qui masque le fait qu'un
+  // type minoritaire peut consacrer l'essentiel de SON budget à des requêtes
+  // déjà couvertes ailleurs.
+  rowshare: { label: 'Part de la ligne', fmt: (v) => `${nf1.format(v)} %`, idx: P.COST, share: true },
+  cost: { label: 'Coût', fmt: fmtMoney, idx: P.COST },
+  clicks: { label: 'Clics', fmt: fmtInt, idx: P.CLICKS },
+  impressions: { label: 'Impressions', fmt: fmtInt, idx: P.IMPR },
+};
+
+Object.assign(S, { cannibMetric: 'rowshare', velocityBid: 'all' });
+
+/**
+ * Rampe séquentielle : une seule teinte, six paliers. Le sens s'inverse en
+ * thème sombre — c'est le CSS qui s'en charge, pas ce code.
+ *
+ * La racine carrée écrase la dynamique : la dépense est très concentrée, et une
+ * échelle linéaire laisserait toutes les cellules sauf une au premier palier.
+ */
+const HEAT_STEPS = ['--heat-1', '--heat-2', '--heat-3', '--heat-4', '--heat-5', '--heat-6'];
+
+function seqColor(ratio) {
+  if (!(ratio > 0)) return 'transparent';
+  const eased = Math.sqrt(Math.min(1, ratio));
+  const i = Math.min(HEAT_STEPS.length - 1, Math.floor(eased * HEAT_STEPS.length));
+  return cssVar(HEAT_STEPS[i]) || cssVar('--seq-450');
+}
+
+/**
+ * Carte de chaleur.
+ *
+ * Encodage séquentiel — une grandeur continue, donc une seule teinte du clair
+ * au foncé, jamais un arc-en-ciel. La valeur est écrite dans chaque cellule :
+ * la couleur seule ne doit pas être le seul moyen de lire un nombre.
+ */
+function renderHeatmap(container, cfg) {
+  const { rows, cols, cells, fmt } = cfg;
+  container.replaceChildren();
+  if (!rows.length || !cols.length) {
+    emptyState(container, 'Aucune donnée sur cette sélection.');
+    return;
+  }
+
+  const max = Math.max(...cells.flat().map((v) => v || 0), 1);
+
+  const wrap = document.createElement('div');
+  wrap.className = 'table-wrap';
+  const table = document.createElement('table');
+  table.className = 'data heatmap';
+
+  const cap = document.createElement('caption');
+  cap.className = 'sr-only';
+  cap.textContent = cfg.caption || 'Matrice';
+  table.appendChild(cap);
+
+  const thead = document.createElement('thead');
+  const htr = document.createElement('tr');
+  const corner = document.createElement('th');
+  corner.className = 'txt';
+  corner.scope = 'col';
+  corner.textContent = cfg.cornerLabel || '';
+  htr.appendChild(corner);
+  for (const c of cols) {
+    const th = document.createElement('th');
+    th.scope = 'col';
+    th.textContent = c;
+    htr.appendChild(th);
+  }
+  if (!cfg.hideTotal) {
+    const thTot = document.createElement('th');
+    thTot.scope = 'col';
+    thTot.textContent = 'Total';
+    htr.appendChild(thTot);
+  }
+  thead.appendChild(htr);
+  table.appendChild(thead);
+
+  const tbody = document.createElement('tbody');
+  rows.forEach((r, ri) => {
+    const tr = document.createElement('tr');
+    const th = document.createElement('th');
+    th.scope = 'row';
+    th.className = 'txt';
+    th.textContent = r;
+    tr.appendChild(th);
+
+    let rowTotal = 0;
+    cols.forEach((c, ci) => {
+      const v = cells[ri][ci] || 0;
+      rowTotal += v;
+      const td = document.createElement('td');
+      td.className = 'heat-cell';
+      if (v > 0) {
+        const bg = seqColor(v / max);
+        td.style.background = bg;
+        // Encre choisie sur la luminance réelle du fond : la rampe couvre du
+        // très clair au très foncé et s'inverse en thème sombre, aucune couleur
+        // de texte fixe ne tient sur les deux extrêmes.
+        td.style.color = inkOn(bg);
+      }
+      td.textContent = v > 0 ? fmt(v) : '—';
+      td.title = `${r} → ${c} : ${fmt(v)}`;
+      tr.appendChild(td);
+    });
+
+    if (!cfg.hideTotal) {
+      const tdTot = document.createElement('td');
+      tdTot.style.fontWeight = '600';
+      tdTot.textContent = fmt(rowTotal);
+      tr.appendChild(tdTot);
+    }
+    tbody.appendChild(tr);
+  });
+  table.appendChild(tbody);
+  wrap.appendChild(table);
+  container.appendChild(wrap);
+}
+
+/**
+ * Courbes sur deux axes continus.
+ *
+ * renderLineChart pose ses points sur des catégories régulièrement espacées ;
+ * ici l'abscisse est une grandeur (dépense cumulée), donc l'espacement doit
+ * refléter les écarts réels — sinon la pente, qui est tout le propos d'une
+ * courbe de rendement, serait fausse.
+ */
+function renderXYLines(container, cfg) {
+  const { series, xFmt, yFmt, xLabel, yLabel } = cfg;
+  container.replaceChildren();
+  const usable = series.filter((s) => s.points.length > 1);
+  if (!usable.length) {
+    emptyState(container, 'Pas assez de points pour tracer une courbe.');
+    return;
+  }
+
+  container.appendChild(buildLegend(usable, { shape: 'line' }));
+
+  const wrap = document.createElement('div');
+  wrap.className = 'chart';
+  container.appendChild(wrap);
+
+  const W = measureWidth(container);
+  const plotH = cfg.height || 260;
+
+  const xs = niceTicks(0, Math.max(...usable.flatMap((s) => s.points.map((p) => p[0])), 1), 5);
+  const ys = niceTicks(0, Math.max(...usable.flatMap((s) => s.points.map((p) => p[1])), 1), 5);
+  const xAxisFmt = axisFormatter(xFmt, xs.max);
+  const yAxisFmt = axisFormatter(yFmt, ys.max);
+
+  const yTexts = ys.ticks.map(yAxisFmt);
+  const padL = Math.max(46, Math.max(...yTexts.map((s) => s.length)) * 6.6 + 12);
+  const padR = 16;
+  const padT = 20;
+  const padB = 44;
+  const H = plotH + padT + padB;
+  const plotW = Math.max(60, W - padL - padR);
+
+  const svg = el('svg', {
+    viewBox: `0 0 ${W} ${H}`, width: W, height: H,
+    role: 'img', 'aria-label': cfg.ariaLabel || 'Courbes',
+  }, wrap);
+
+  const X = (v) => padL + ((v - xs.min) / (xs.max - xs.min || 1)) * plotW;
+  const Y = (v) => padT + plotH - ((v - ys.min) / (ys.max - ys.min || 1)) * plotH;
+
+  for (const t of ys.ticks) {
+    const yy = Y(t);
+    el('line', { class: 'grid-line', x1: padL, x2: padL + plotW, y1: yy, y2: yy }, svg);
+    textNode('text', { class: 'axis-label', x: padL - 8, y: yy + 3.5, 'text-anchor': 'end' },
+      yAxisFmt(t), svg);
+  }
+  el('line', { class: 'axis-line', x1: padL, x2: padL + plotW, y1: padT + plotH, y2: padT + plotH }, svg);
+  for (const t of xs.ticks) {
+    textNode('text', { class: 'axis-label', x: X(t), y: padT + plotH + 17, 'text-anchor': 'middle' },
+      xAxisFmt(t), svg);
+  }
+  textNode('text', { class: 'axis-title', x: padL + plotW, y: padT + plotH + 34, 'text-anchor': 'end' },
+    xLabel, svg);
+  textNode('text', { class: 'axis-title', x: padL, y: padT - 8, 'text-anchor': 'start' }, yLabel, svg);
+
+  for (const s of usable) {
+    el('path', {
+      d: linePath(s.points.map((p) => [X(p[0]), Y(p[1])])),
+      fill: 'none', stroke: s.color, 'stroke-width': 2,
+      'stroke-linejoin': 'round', 'stroke-linecap': 'round',
+    }, svg);
+    const last = s.points[s.points.length - 1];
+    el('circle', {
+      cx: X(last[0]), cy: Y(last[1]), r: 4, fill: s.color,
+      stroke: cssVar('--surface-1'), 'stroke-width': 2,
+    }, svg);
+  }
+
+  // Réticule : à chaque abscisse, la valeur de chaque courbe par interpolation
+  // — les courbes n'ont pas les mêmes abscisses, on ne peut pas lire un index.
+  const crosshair = el('line', {
+    class: 'crosshair', y1: padT, y2: padT + plotH, x1: -99, x2: -99, style: 'display:none',
+  }, svg);
+  const dots = usable.map((s) => el('circle', {
+    r: 4.5, fill: s.color, stroke: cssVar('--surface-1'), 'stroke-width': 2,
+    style: 'display:none',
+  }, svg));
+
+  const interp = (pts, x) => {
+    if (x < pts[0][0] || x > pts[pts.length - 1][0]) return null;
+    for (let i = 1; i < pts.length; i++) {
+      if (pts[i][0] >= x) {
+        const [x0, y0] = pts[i - 1];
+        const [x1, y1] = pts[i];
+        const f = x1 === x0 ? 0 : (x - x0) / (x1 - x0);
+        return y0 + (y1 - y0) * f;
+      }
+    }
+    return pts[pts.length - 1][1];
+  };
+
+  const overlay = el('rect', {
+    class: 'hit', x: padL, y: padT, width: plotW, height: plotH, tabindex: 0,
+    'aria-label': cfg.ariaLabel || 'Courbes',
+  }, svg);
+
+  overlay.addEventListener('pointermove', (ev) => {
+    const r = svg.getBoundingClientRect();
+    const px = ((ev.clientX - r.left) / r.width) * W;
+    const xv = xs.min + ((px - padL) / plotW) * (xs.max - xs.min);
+    crosshair.setAttribute('x1', px);
+    crosshair.setAttribute('x2', px);
+    crosshair.style.display = '';
+    Tip.show(ev.clientX, ev.clientY, (n) => {
+      tipHead(n, `${xLabel} : ${xFmt(xv)}`);
+      usable.forEach((s, si) => {
+        const yv = interp(s.points, xv);
+        if (yv === null) { dots[si].style.display = 'none'; return; }
+        dots[si].style.display = '';
+        dots[si].setAttribute('cx', X(xv));
+        dots[si].setAttribute('cy', Y(yv));
+        tipRow(n, { name: s.name, value: yFmt(yv), color: s.color });
+      });
+    });
+  });
+  overlay.addEventListener('pointerleave', () => {
+    crosshair.style.display = 'none';
+    dots.forEach((d) => { d.style.display = 'none'; });
+    Tip.hide();
+  });
+}
+
+/* ── Matrice de cannibalisation ───────────────────────────────────────────── */
+
+/**
+ * Qui dépense sur les requêtes que couvre aussi un autre type ?
+ *
+ * Un Sankey mot-clé → correspondance → requête était l'idée initiale, mais avec
+ * 4 000 requêtes et autant de mots-clés il devient un enchevêtrement illisible.
+ * La matrice répond directement à la question posée — « combien le Large
+ * dépense-t-il sur des requêtes que mon Exact couvre déjà » — en une grille de
+ * 3 × 3 qu'on lit d'un coup d'œil.
+ *
+ * Lecture : ligne = le type qui a dépensé, colonne = un type qui couvre aussi
+ * cette requête. La diagonale est la dépense sur les requêtes exclusives.
+ */
+function cannibMatrix(pairs, nMatch) {
+  const byTerm = new Map();
+  for (const p of pairs) {
+    let a = byTerm.get(p[P.TERM]);
+    if (!a) byTerm.set(p[P.TERM], (a = []));
+    a.push(p);
+  }
+  const cells = Array.from({ length: nMatch }, () => new Array(nMatch).fill(0));
+  const idx = CANNIB_METRIC[S.cannibMetric].idx;
+  let contestedTerms = 0;
+  let contestedValue = 0;
+
+  for (const [, ps] of byTerm) {
+    const present = new Set(ps.map((p) => p[P.MATCH]));
+    const multi = present.size > 1;
+    if (multi) contestedTerms++;
+    for (const p of ps) {
+      const v = p[idx] || 0;
+      if (multi) contestedValue += v;
+      if (!multi) {
+        cells[p[P.MATCH]][p[P.MATCH]] += v;   // exclusif
+      } else {
+        for (const other of present) {
+          if (other !== p[P.MATCH]) cells[p[P.MATCH]][other] += v;
+        }
+      }
+    }
+  }
+  return { cells, contestedTerms, contestedValue, totalTerms: byTerm.size };
+}
+
+function renderCannib() {
+  const t = S.terms;
+  const pairs = termPairs();
+  const m = CANNIB_METRIC[S.cannibMetric];
+  if (!pairs.length) {
+    emptyState(els.cannibBody, 'Aucune donnée sur cette sélection.');
+    return;
+  }
+
+  const raw = cannibMatrix(pairs, t.matchTypes.length);
+  const { contestedTerms, contestedValue, totalTerms } = raw;
+  let cells = raw.cells;
+  const total = pairs.reduce((a, p) => a + (p[m.idx] || 0), 0);
+
+  if (m.share) {
+    cells = cells.map((row) => {
+      const sum = row.reduce((a, v) => a + v, 0);
+      return row.map((v) => (sum ? v / sum * 100 : 0));
+    });
+  }
+
+  // La part non exclusive de chaque ligne : quelle fraction de son propre
+  // budget un type consacre à des requêtes déjà couvertes ailleurs.
+  const shares = raw.cells.map((row, i) => {
+    const sum = row.reduce((a, v) => a + v, 0);
+    return sum ? (sum - row[i]) / sum * 100 : 0;
+  });
+  const worst = shares.indexOf(Math.max(...shares));
+
+  els.cannibSub.textContent =
+    `${contestedTerms.toLocaleString('fr-CH')} requêtes sur ${totalTerms.toLocaleString('fr-CH')} `
+    + `captées par plusieurs types (${(contestedTerms / totalTerms * 100).toFixed(1)} %), `
+    + `soit ${compactly(CANNIB_METRIC.cost.fmt, contestedValue)} — `
+    + `${(contestedValue / total * 100).toFixed(1)} % du total. `
+    + `Ligne = type qui dépense, colonne = type couvrant aussi la requête ; `
+    + `la diagonale est l'exclusif. `
+    + `Le plus recouvrant : ${t.matchTypes[worst]}, `
+    + `${shares[worst].toFixed(0)} % de son budget sur des requêtes déjà couvertes.`;
+
+  if (S.views.cannib === 'table') {
+    // Vue tableau : le détail des requêtes contestées les plus coûteuses,
+    // qui est ce sur quoi on agit concrètement.
+    const byTerm = new Map();
+    for (const p of pairs) {
+      let a = byTerm.get(p[P.TERM]);
+      if (!a) byTerm.set(p[P.TERM], (a = []));
+      a.push(p);
+    }
+    const rows = [];
+    for (const [ti, ps] of byTerm) {
+      if (new Set(ps.map((p) => p[P.MATCH])).size < 2) continue;
+      const row = { term: t.terms[ti], total: ps.reduce((a, p) => a + (p[m.idx] || 0), 0) };
+      for (let i = 0; i < t.matchTypes.length; i++) {
+        row[`m${i}`] = ps.filter((p) => p[P.MATCH] === i)
+          .reduce((a, p) => a + (p[m.idx] || 0), 0);
+      }
+      rows.push(row);
+    }
+    rows.sort((a, b) => b.total - a.total);
+    const cols = [{ key: 'term', label: 'Requête contestée', text: true }];
+    t.matchTypes.forEach((name, i) => cols.push({ key: `m${i}`, label: name, fmt: m.fmt }));
+    cols.push({ key: 'total', label: 'Total', fmt: m.fmt });
+    renderTable(els.cannibBody, {
+      cols, rows, scroll: true,
+      caption: 'Requêtes captées par plusieurs types de correspondance',
+    });
+    return;
+  }
+
+  renderHeatmap(els.cannibBody, {
+    rows: t.matchTypes, cols: t.matchTypes, cells,
+    fmt: m.share ? m.fmt : (v) => compactly(m.fmt, v),
+    // En part de ligne chaque total vaut 100 % : l'afficher n'apprendrait rien.
+    hideTotal: !!m.share,
+    cornerLabel: 'dépense ↓ / couvre →',
+    caption: 'Matrice de cannibalisation entre types de correspondance',
+  });
+}
+
+/* ── Vélocité de dérive ───────────────────────────────────────────────────── */
+
+function renderVelocity() {
+  const t = S.terms;
+  const drift = t.drift || [];
+  if (!drift.length) {
+    els.velocitySub.textContent = 'Pas de série hebdomadaire dans ce jeu de données.';
+    emptyState(els.velocityBody, 'Régénérez terms.json avec la version actuelle du script.');
+    return;
+  }
+
+  const bidFilter = S.velocityBid;
+  const weeks = t.weeks || [];
+  // (correspondance, semaine) → [clics, somme pondérée]
+  const acc = new Map();
+  for (const [wi, mi, bi, clicks, , , ov] of drift) {
+    if (bidFilter !== 'all' && String(bi) !== bidFilter) continue;
+    const k = `${mi}|${wi}`;
+    const cur = acc.get(k) || [0, 0];
+    cur[0] += clicks;
+    cur[1] += ov * clicks;
+    acc.set(k, cur);
+  }
+
+  const usedMatch = [...new Set(drift.map((d) => d[1]))];
+  const series = usedMatch.map((mi, k) => ({
+    key: String(mi),
+    name: t.matchTypes[mi],
+    color: seriesColor(k + 1),
+    values: weeks.map((_, wi) => {
+      const cur = acc.get(`${mi}|${wi}`);
+      // Une semaine sans volume suffisant n'a pas de moyenne : on coupe la
+      // courbe plutôt que de tracer un zéro qui se lirait comme une dérive totale.
+      return cur && cur[0] > 0 ? Math.round(cur[1] / cur[0] * 100) : null;
+    }),
+  })).filter((s) => s.values.some((v) => v !== null));
+
+  const bidLabel = bidFilter === 'all'
+    ? 'toutes stratégies'
+    : (t.biddingTypes || [])[Number(bidFilter)] || '';
+  els.velocitySub.textContent =
+    `Recouvrement lexical moyen, pondéré par les clics, semaine par semaine · ${bidLabel} · `
+    + `minimum ${t.meta.min_week_clicks} clics par semaine. `
+    + `Une courbe qui baisse signifie un ciblage qui s'élargit.`;
+
+  if (S.views.velocity === 'table') {
+    const cols = [{ key: 'week', label: 'Semaine', text: true }];
+    for (const s of series) cols.push({ key: s.key, label: s.name, fmt: (v) => (v === null ? '—' : `${v} / 100`) });
+    renderTable(els.velocityBody, {
+      cols, scroll: true,
+      caption: 'Recouvrement lexical moyen par semaine et type de correspondance',
+      rows: weeks.map((w, wi) => {
+        const r = { week: fmtDateShort(w) };
+        for (const s of series) r[s.key] = s.values[wi];
+        return r;
+      }),
+    });
+    return;
+  }
+
+  renderLineChart(els.velocityBody, {
+    xLabels: weeks.map((w) => fmtDateShort(w)),
+    xFull: weeks.map((w) => `Semaine du ${fmtDateLong(w)}`),
+    series,
+    fmt: (v, o) => fmtInt(v, o),
+    endLabel: true, height: 240, summable: false,
+    ariaLabel: 'Recouvrement lexical moyen par semaine et type de correspondance',
+  });
+}
+
+/* ── Efficacité marginale ─────────────────────────────────────────────────── */
+
+function renderMarginal() {
+  const t = S.terms;
+  const pairs = termPairs();
+  if (!pairs.length) {
+    emptyState(els.marginalBody, 'Aucune donnée sur cette sélection.');
+    return;
+  }
+
+  // Chaque type dépense « au mieux d'abord » : on trie ses paires par coût par
+  // conversion croissant, puis on cumule. La pente de la courbe est le
+  // rendement marginal ; son aplatissement marque le point où l'euro suivant
+  // rapporte moins. Comparer deux types à une même abscisse répond à la
+  // question posée : à dépense égale, lequel convertit le plus.
+  const byMatch = new Map();
+  for (const p of pairs) {
+    let a = byMatch.get(p[P.MATCH]);
+    if (!a) byMatch.set(p[P.MATCH], (a = []));
+    a.push(p);
+  }
+
+  const series = [...byMatch.entries()]
+    .sort((a, b) => a[0] - b[0])
+    .map(([mi, ps], k) => {
+      const ordered = [...ps].sort((x, y) => {
+        const cx = x[P.CONV] > 0 ? x[P.COST] / x[P.CONV] : Infinity;
+        const cy = y[P.CONV] > 0 ? y[P.COST] / y[P.CONV] : Infinity;
+        return cx - cy;
+      });
+      const points = [[0, 0]];
+      let cc = 0;
+      let cv = 0;
+      for (const p of ordered) {
+        cc += p[P.COST];
+        cv += p[P.CONV];
+        points.push([cc, cv]);
+      }
+      return {
+        key: String(mi), name: t.matchTypes[mi], color: seriesColor(k + 1),
+        points, totalCost: cc, totalConv: cv,
+      };
+    })
+    .filter((s) => s.totalCost > 0);
+
+  const best = [...series].sort((a, b) => (b.totalConv / b.totalCost) - (a.totalConv / a.totalCost))[0];
+  els.marginalSub.textContent =
+    `Conversions cumulées face à la dépense cumulée, meilleures paires d'abord. `
+    + `Plus une courbe s'aplatit tôt, plus le rendement se dégrade. `
+    + (best ? `Rendement global le plus élevé : ${best.name} `
+        + `(${fmtMoney(best.totalCost / best.totalConv)} par conversion).` : '');
+
+  if (S.views.marginal === 'table') {
+    renderTable(els.marginalBody, {
+      caption: 'Rendement par type de correspondance',
+      cols: [
+        { key: 'name', label: 'Correspondance', text: true },
+        { key: 'pairs', label: 'Paires', fmt: (v) => fmtInt(v) },
+        { key: 'cost', label: 'Coût', fmt: (v) => fmtMoney(v) },
+        { key: 'conv', label: 'Conv.', fmt: fmtNum1 },
+        { key: 'cpa', label: 'CPA', fmt: (v) => fmtMoney(v) },
+      ],
+      rows: series.map((s) => ({
+        name: s.name,
+        pairs: s.points.length - 1,
+        cost: s.totalCost,
+        conv: s.totalConv,
+        cpa: s.totalConv ? s.totalCost / s.totalConv : NaN,
+        _swatch: s.color,
+      })),
+    });
+    return;
+  }
+
+  renderXYLines(els.marginalBody, {
+    series,
+    xFmt: fmtMoney, yFmt: fmtNum1,
+    xLabel: `Dépense cumulée (${CURRENCY})`,
+    yLabel: 'Conversions cumulées',
+    height: 240,
+    ariaLabel: 'Rendement décroissant par type de correspondance',
+  });
+}
+
+function renderMatchSection() {
+  if (S.termsState !== 'ready') return;
+  els.matchSection.hidden = false;
+  const t = S.terms;
+  els.matchMeta.textContent =
+    `${t.matchTypes.join(' · ')} · ${fmtDateLong(t.meta.date_start)} – ${fmtDateLong(t.meta.date_end)}`;
+  renderCannib();
+  renderVelocity();
+  renderMarginal();
+}
+
 /* ── Orchestration de la section ──────────────────────────────────────────── */
 
 function renderTermsSection() {
@@ -2439,6 +2980,7 @@ function renderTermsSection() {
   renderDrift();
   renderIntent();
   renderNgrams();
+  renderMatchSection();
 }
 
 async function loadTerms() {
@@ -2481,6 +3023,18 @@ async function loadTerms() {
   buildSegmented(els.intentScale,
     [{ key: 'share', label: 'Base 100' }, { key: 'abs', label: 'Absolu' }],
     () => S.intentScale, (k) => { S.intentScale = k; renderTermsSection(); });
+
+  fillSelectFrom(els.cannibMetric, CANNIB_METRIC, S.cannibMetric);
+  els.cannibMetric.addEventListener('change', () => {
+    S.cannibMetric = els.cannibMetric.value;
+    renderMatchSection();
+  });
+
+  const bidOpts = [{ key: 'all', label: 'Toutes' }].concat(
+    (S.terms.biddingTypes || []).map((name, i) => ({ key: String(i), label: name }))
+  );
+  buildSegmented(els.velocityBid, bidOpts,
+    () => S.velocityBid, (k) => { S.velocityBid = k; renderMatchSection(); });
 
   buildViewToggles();
   renderTermsSection();
@@ -2953,6 +3507,10 @@ function cacheEls() {
     intentBody: 'intent-body', intentSub: 'intent-sub', intentDim: 'intent-dim',
     intentScale: 'intent-scale',
     ngramBody: 'ngram-body', ngramSub: 'ngram-sub', ngramMetric: 'ngram-metric',
+    matchSection: 'match-section', matchMeta: 'match-meta',
+    cannibBody: 'cannib-body', cannibSub: 'cannib-sub', cannibMetric: 'cannib-metric',
+    velocityBody: 'velocity-body', velocitySub: 'velocity-sub', velocityBid: 'velocity-bid',
+    marginalBody: 'marginal-body', marginalSub: 'marginal-sub',
   };
   for (const k in ids) els[k] = document.getElementById(ids[k]);
 }

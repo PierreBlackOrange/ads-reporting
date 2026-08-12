@@ -54,6 +54,7 @@ TERMS_QUERY = """
       segments.keyword.info.match_type,
       segments.date,
       campaign.name,
+      campaign.bidding_strategy_type,
       metrics.impressions,
       metrics.clicks,
       metrics.cost_micros,
@@ -63,6 +64,15 @@ TERMS_QUERY = """
     WHERE segments.date BETWEEN '{start}' AND '{end}'
       AND metrics.clicks > 0
 """
+
+# Le Smart Bidding est ce qui autorise Google à élargir le ciblage : c'est la
+# distinction qui compte pour lire une dérive, pas le nom exact de la stratégie.
+SMART_BIDDING = {
+    "TARGET_CPA", "TARGET_ROAS", "MAXIMIZE_CONVERSIONS", "MAXIMIZE_CONVERSION_VALUE",
+    "TARGET_SPEND", "MAXIMIZE_CLICKS", "TARGET_IMPRESSION_SHARE",
+}
+BID_SMART, BID_MANUAL = 0, 1
+BID_LABELS = ["Smart Bidding", "Enchères manuelles"]
 
 MATCH_LABELS = {
     "EXACT": "Exact",
@@ -94,24 +104,82 @@ def tokenize(text: str) -> list[str]:
     return [t for t in TOKEN_RE.findall(text.lower()) if t not in STOPWORDS and len(t) > 1]
 
 
+def stem(token: str) -> str:
+    """
+    Racinisation minimale du français : pluriels et féminins courants.
+
+    Sans elle, « rencontre » et « rencontres » sont deux tokens distincts et
+    « site de rencontre gratuit » face à « rencontres gratuites » obtient un
+    recouvrement nul alors que les deux requêtes sont quasi identiques. Mesuré
+    sur le jeu réel, c'était la première cause de faux positifs de dérive.
+
+    Volontairement grossière : pas de Porter ni de dictionnaire. Elle ne doit
+    corriger que la morphologie de surface, pas rapprocher des mots différents.
+    """
+    if len(token) <= 3:
+        return token
+    # L'ordre est porteur : « es » avant « s » et avant « e », sinon
+    # « rencontres » perdrait « s » et « rencontre » son « e », donnant deux
+    # racines différentes — précisément le faux positif à corriger.
+    for suffix in ("aux", "es", "s", "x", "e"):
+        if token.endswith(suffix) and len(token) - len(suffix) >= 3:
+            return token[: -len(suffix)]
+    return token
+
+
+def stem_set(text: str) -> set[str]:
+    return {stem(t) for t in tokenize(text)}
+
+
 def ngrams_of(tokens: list[str], n: int) -> list[str]:
     return [" ".join(tokens[i:i + n]) for i in range(len(tokens) - n + 1)]
 
 
+def normalize_flat(text: str) -> str:
+    """Texte réduit à ses lettres et chiffres — « plan cul » et « plancul » s'y rejoignent."""
+    return "".join(TOKEN_RE.findall(text.lower()))
+
+
 def lexical_overlap(term: str, keyword: str) -> float:
     """
-    Recouvrement lexical de Jaccard entre le terme et le mot-clé.
+    Recouvrement lexical de Jaccard entre le terme et le mot-clé, après
+    racinisation.
 
     Ce n'est PAS une distance sémantique — deux synonymes ont un recouvrement
-    nul tout en étant parfaitement pertinents. Sert uniquement de pré-filtre
-    bon marché pour prioriser ce qu'on envoie au scoring sémantique : un
-    recouvrement faible est un candidat probable, pas un verdict.
+    nul tout en étant parfaitement pertinents. Sert de pré-filtre bon marché
+    pour prioriser ce qu'on envoie au scoring sémantique : un recouvrement
+    faible est un candidat probable, pas un verdict.
+
+    Deux rattrapages avant le calcul, chacun corrigeant un faux positif observé
+    sur les données réelles :
+      - chaînes identiques une fois la ponctuation retirée. « j&m » face à
+        « j&m » tombait à 0 : le « & » disparaît, restent « j » et « m » que le
+        filtre de longueur élimine, et deux ensembles vides donnaient 0.
+      - concaténation. « plancul » face à « plan cul » tombait à 0 alors que
+        c'est la même requête écrite sans espace.
     """
-    a = set(tokenize(term))
-    b = set(tokenize(keyword))
+    flat_a, flat_b = normalize_flat(term), normalize_flat(keyword)
+    if flat_a and flat_a == flat_b:
+        return 1.0
+
+    a = stem_set(term)
+    b = stem_set(keyword)
     if not a or not b:
+        # Tout a été filtré (sigles courts, ponctuation) : on retombe sur la
+        # comparaison à plat plutôt que de déclarer une dérive totale.
+        if flat_a and flat_b:
+            return 1.0 if flat_a == flat_b else (
+                0.5 if flat_a in flat_b or flat_b in flat_a else 0.0
+            )
         return 0.0
-    return len(a & b) / len(a | b)
+
+    jaccard = len(a & b) / len(a | b)
+    # Un mot-clé entièrement contenu dans une requête plus longue n'est pas une
+    # dérive : c'est une précision ajoutée par l'internaute. Jaccard le pénalise
+    # pourtant à proportion des mots en trop.
+    if a >= b or b >= a:
+        jaccard = max(jaccard, 0.6)
+    return jaccard
 
 
 # ── Agrégation ───────────────────────────────────────────────────────────────
@@ -131,6 +199,12 @@ class Indexer:
 
 def month_of(iso: str) -> str:
     return iso[:7]
+
+
+def week_of(iso: str) -> str:
+    """Lundi de la semaine ISO contenant cette date."""
+    d = dt.date.fromisoformat(iso)
+    return (d - dt.timedelta(days=d.weekday())).isoformat()
 
 
 def main() -> int:
@@ -183,6 +257,14 @@ def main() -> int:
     pairs: dict[tuple, dict] = {}
     # n-gramme → [coût récent, coût précédent, clics récents, clics précédents, {termes}]
     ngrams: dict[str, list] = collections.defaultdict(lambda: [0.0, 0.0, 0, 0, set()])
+
+    # Vélocité de dérive : (semaine, correspondance, enchères) → agrégats.
+    # Le recouvrement moyen est pondéré par les clics — une requête à 3 000 clics
+    # doit peser plus qu'une à 2 dans la moyenne hebdomadaire, sinon la traîne
+    # dicterait la courbe.
+    weeks: set[str] = set()
+    drift: dict[tuple, list] = collections.defaultdict(lambda: [0, 0.0, 0.0, 0.0])
+    #                                        clics, coût, conv, somme(recouvrement × clics)
 
     failures: list[tuple[str, str]] = []
     raw_rows = 0
@@ -241,6 +323,20 @@ def main() -> int:
 
             month = month_of(date)
             months.add(month)
+
+            # Vélocité de dérive, calculée sur TOUTES les lignes et pas
+            # seulement sur les paires publiées : une moyenne hebdomadaire
+            # tronquée au plafond ne serait pas une moyenne.
+            bidding = (r.get("campaign") or {}).get("biddingStrategyType") or ""
+            bid = BID_SMART if bidding in SMART_BIDDING else BID_MANUAL
+            wk = week_of(date)
+            weeks.add(wk)
+            ov = lexical_overlap(term, keyword)
+            dslot = drift[(wk, match, bid)]
+            dslot[0] += clicks
+            dslot[1] += cost
+            dslot[2] += conv
+            dslot[3] += ov * clicks
 
             key = (terms_idx.get(term), kw_idx.get(keyword), match_idx.get(match), ai)
             p = pairs.get(key)
@@ -325,6 +421,20 @@ def main() -> int:
     ng_rows.sort(key=lambda r: -abs(r[1] - r[2]))
     ng_rows = ng_rows[:600]
 
+    # ── Vélocité de dérive publiée ───────────────────────────────────────────
+    week_list = sorted(weeks)
+    wpos = {w: i for i, w in enumerate(week_list)}
+    MIN_WEEK_CLICKS = 30   # sous ce volume la moyenne hebdomadaire est du bruit
+    drift_rows = []
+    for (wk, match, bid), (clicks, cost, conv, ovsum) in sorted(drift.items()):
+        if clicks < MIN_WEEK_CLICKS:
+            continue
+        drift_rows.append([
+            wpos[wk], match_idx.get(match), bid,
+            clicks, round(cost, 2), round(conv, 2),
+            round(ovsum / clicks, 4),
+        ])
+
     dataset = {
         "meta": {
             "generated_at": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"),
@@ -342,13 +452,19 @@ def main() -> int:
             "ngrams_total": len(ngrams),
             "ngrams_published": len(ng_rows),
             "min_clicks_ngram": MIN_CLICKS,
+            "min_week_clicks": MIN_WEEK_CLICKS,
+            "drift_rows": len(drift_rows),
+            "overlap_method": "jaccard racinisé (pluriels, féminins, concaténation)",
             "min_clicks": args.min_clicks,
             "excluded_rows": excluded_rows,
             "excluded_cost": round(excluded_cost, 2),
         },
         "accounts": acc_idx.values,
         "matchTypes": [MATCH_LABELS.get(m, m) for m in match_idx.values],
+        "biddingTypes": BID_LABELS,
         "months": month_list,
+        "weeks": week_list,
+        "drift": drift_rows,
         "terms": [terms_idx.values[i] for i in used_t],
         "keywords": [kw_idx.values[i] for i in used_k],
         "pairs": out_pairs,

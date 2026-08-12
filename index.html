@@ -291,6 +291,64 @@
     </div>
   </section>
 
+  <!-- ── Types de correspondance ──────────────────────────────────────── -->
+  <section class="section" id="match-section" aria-labelledby="h-match" hidden>
+    <div class="section__head">
+      <h2 id="h-match">Types de correspondance</h2>
+      <p class="section__sub" id="match-meta"></p>
+    </div>
+
+    <article class="card card--wide">
+      <div class="card__head">
+        <div>
+          <h3 class="card__title" id="h-cannib">Matrice de cannibalisation</h3>
+          <p class="card__sub" id="cannib-sub"></p>
+        </div>
+        <div class="card__tools">
+          <label class="select-wrap">
+            <span class="sr-only">Mesure</span>
+            <select id="cannib-metric" class="select"></select>
+          </label>
+          <div class="segmented segmented--sm viewtoggle" role="group"
+               aria-label="Type d'affichage" data-view-for="cannib"></div>
+        </div>
+      </div>
+      <div class="card__body" id="cannib-body"></div>
+    </article>
+
+    <div class="grid-2" style="margin-top:16px">
+      <article class="card">
+        <div class="card__head">
+          <div>
+            <h3 class="card__title" id="h-velocity">Vélocité de dérive</h3>
+            <p class="card__sub" id="velocity-sub"></p>
+          </div>
+          <div class="card__tools">
+            <div class="segmented segmented--sm" role="group"
+                 aria-label="Stratégie d'enchères" id="velocity-bid"></div>
+            <div class="segmented segmented--sm viewtoggle" role="group"
+                 aria-label="Type d'affichage" data-view-for="velocity"></div>
+          </div>
+        </div>
+        <div class="card__body" id="velocity-body"></div>
+      </article>
+
+      <article class="card">
+        <div class="card__head">
+          <div>
+            <h3 class="card__title" id="h-marginal">Efficacité marginale</h3>
+            <p class="card__sub" id="marginal-sub"></p>
+          </div>
+          <div class="card__tools">
+            <div class="segmented segmented--sm viewtoggle" role="group"
+                 aria-label="Type d'affichage" data-view-for="marginal"></div>
+          </div>
+        </div>
+        <div class="card__body" id="marginal-body"></div>
+      </article>
+    </div>
+  </section>
+
   <!-- ── Tableau détaillé ─────────────────────────────────────────────── -->
   <section class="section" aria-labelledby="h-detail">
     <article class="card card--wide">
