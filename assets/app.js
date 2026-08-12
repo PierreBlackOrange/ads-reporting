@@ -20,6 +20,26 @@ const FOLD_SLOT = 8;
 const cssVar = (name) => getComputedStyle(document.body).getPropertyValue(name).trim();
 const seriesColor = (slot) => cssVar(`--series-${slot}`);
 
+/**
+ * Encre lisible sur un aplat de couleur.
+ *
+ * Une étiquette posée *dans* une zone colorée est la seule exception à la règle
+ * « le texte ne porte jamais la couleur de série » : on choisit blanc ou noir
+ * selon la luminance du fond, pour que le contraste tienne quelle que soit la
+ * teinte (le jaune et l'aqua exigent de l'encre sombre, le bleu du blanc).
+ */
+function inkOn(hex) {
+  const m = /^#?([0-9a-f]{6})$/i.exec((hex || '').trim());
+  if (!m) return '#fff';
+  const n = parseInt(m[1], 16);
+  const lin = (c) => {
+    const v = c / 255;
+    return v <= 0.04045 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4);
+  };
+  const L = 0.2126 * lin((n >> 16) & 255) + 0.7152 * lin((n >> 8) & 255) + 0.0722 * lin(n & 255);
+  return L > 0.42 ? '#0b0b0b' : '#ffffff';
+}
+
 /* ── Formatage (fr-CH) ────────────────────────────────────────────────────── */
 
 const nf0 = new Intl.NumberFormat('fr-CH', { maximumFractionDigits: 0 });
@@ -890,8 +910,18 @@ function renderBarChart(container, cfg) {
 
 /* ── Barres empilées horizontales ─────────────────────────────────────────── */
 
+/**
+ * Barres empilées horizontales.
+ *
+ * `normalize` met chaque barre à 100 % de la largeur : les compositions
+ * deviennent comparables entre lignes de tailles très différentes, ce qu'une
+ * échelle absolue interdit — un compte à 14 k€ n'est qu'un trait à côté d'un
+ * compte à 181 k€. Le total absolu reste écrit en bout de barre : sans lui, la
+ * normalisation ferait disparaître le fait que l'un pèse treize fois l'autre.
+ */
 function renderStackedBars(container, cfg) {
   const { rows, series, fmt } = cfg;
+  const normalize = !!cfg.normalize;
   container.replaceChildren();
   if (!rows.length || !series.length) {
     emptyState(container, 'Aucune donnée sur cette sélection.');
@@ -939,7 +969,7 @@ function renderStackedBars(container, cfg) {
       class: 'axis-label', x: padL - 10, y: yTop + barH / 2 + 3.5, 'text-anchor': 'end',
     }, short, svg);
 
-    const full = (total / maxTotal) * plotW;
+    const full = normalize ? plotW : (total / maxTotal) * plotW;
     const visible = series.filter((s) => (r.values[s.key] || 0) > 0);
     const gaps = Math.max(0, visible.length - 1) * GAP;
     const usable = Math.max(0, full - gaps);
@@ -958,6 +988,20 @@ function renderStackedBars(container, cfg) {
       if (first && !last) d = `M${cx},${yTop} h${Math.max(w, 0)} v${barH} h${-Math.max(w, 0)} Z`;
 
       const seg = el('path', { class: 'bar-mark', d, fill: s.color }, svg);
+
+      // En base 100, la part se lit dans le segment — mais uniquement si elle
+      // y tient avec de la marge. Un libellé rogné est pire que pas de libellé ;
+      // les parts trop étroites restent dans l'infobulle et le tableau.
+      if (normalize && total) {
+        const pct = (v / total) * 100;
+        const text = `${Math.round(pct)} %`;
+        if (w >= text.length * 7.4 + 12) {
+          textNode('text', {
+            x: cx + w / 2, y: yTop + barH / 2 + 3.5, 'text-anchor': 'middle',
+            'font-size': 11, 'font-weight': 600, fill: inkOn(s.color),
+          }, text, svg);
+        }
+      }
 
       const hit = el('rect', {
         class: 'hit hit--mark', x: cx, y: padT + ri * rowH, width: Math.max(w, 1),
@@ -1862,6 +1906,10 @@ Object.assign(S, {
   termsState: 'idle',   // idle | loading | ready | error
   driftX: 'cost',
   intentDim: 'account',
+  // Base 100 par défaut : la question posée à ce graphique est « de quoi est
+  // faite la dépense de ce compte », pas « lequel dépense le plus » — cette
+  // dernière est déjà répondue ailleurs dans le rapport.
+  intentScale: 'share',
   ngramMetric: 'cost',
 });
 
@@ -2033,10 +2081,18 @@ function renderIntent() {
   }
 
   const byMonth = S.intentDim === 'month';
+  const share = S.intentScale === 'share';
   const method = (S.terms.meta || {}).intent_method === 'llm'
     ? 'classées par modèle' : 'classées par règles lexicales';
-  els.intentSub.textContent =
-    `Coût par intention, ventilé par ${byMonth ? 'mois' : 'compte'} · ${method}`;
+  // La fenêtre de terms.json tombe rarement sur des mois entiers : le premier
+  // et le dernier sont tronqués. En base 100 c'est sans effet — une part reste
+  // juste — mais en absolu le dernier mois se lirait comme un effondrement.
+  const partialMonths = byMonth && !share ? ' — premier et dernier mois tronqués' : '';
+  els.intentSub.textContent = (share
+    ? `Répartition du coût par intention, base 100 par ${byMonth ? 'mois' : 'compte'} · `
+      + `total absolu en bout de barre · ${method}`
+    : `Coût par intention, ventilé par ${byMonth ? 'mois' : 'compte'} · ${method}`)
+    + partialMonths;
 
   const seriesDefs = INTENT_LABELS.map((name, i) => ({
     key: String(i), name, slot: i + 1,
@@ -2089,22 +2145,44 @@ function renderIntent() {
     .map((s) => ({ ...s, color: seriesColor(s.slot) }));
 
   if (S.views.intent === 'table') {
+    // Le tableau suit l'échelle choisie : en base 100 il donne les parts, ce
+    // qui est la lecture demandée au graphique.
+    const cellFmt = share
+      ? (v) => (v === null || v === undefined ? '—' : `${nf1.format(v)} %`)
+      : (v) => fmtMoney(v || 0);
     const cols = [{ key: 'label', label: byMonth ? 'Mois' : 'Compte', text: true }];
-    for (const s of series) cols.push({ key: s.key, label: s.name, fmt: (v) => fmtMoney(v || 0) });
+    for (const s of series) cols.push({ key: s.key, label: s.name, fmt: cellFmt });
     cols.push({ key: 'total', label: 'Total', fmt: (v) => fmtMoney(v) });
-    const foot = { label: 'Total', total: rows.reduce((a, r) => a + r.total, 0) };
-    for (const s of series) foot[s.key] = rows.reduce((a, r) => a + (r.values[s.key] || 0), 0);
+
+    const grand = rows.reduce((a, r) => a + r.total, 0);
+    const foot = { label: 'Total', total: grand };
+    for (const s of series) {
+      const sum = rows.reduce((a, r) => a + (r.values[s.key] || 0), 0);
+      foot[s.key] = share ? (grand ? sum / grand * 100 : 0) : sum;
+    }
+
     renderTable(els.intentBody, {
       cols, foot, scroll: true,
-      caption: `Coût par intention et par ${byMonth ? 'mois' : 'compte'}`,
-      rows: rows.map((r) => ({ label: r.label, total: r.total, ...r.values })),
+      caption: share
+        ? `Part de chaque intention par ${byMonth ? 'mois' : 'compte'}`
+        : `Coût par intention et par ${byMonth ? 'mois' : 'compte'}`,
+      rows: rows.map((r) => {
+        const out = { label: r.label, total: r.total };
+        for (const s of series) {
+          const v = r.values[s.key] || 0;
+          out[s.key] = share ? (r.total ? v / r.total * 100 : 0) : v;
+        }
+        return out;
+      }),
     });
     return;
   }
 
   renderStackedBars(els.intentBody, {
-    rows, series, fmt: fmtMoney,
-    ariaLabel: `Coût par intention et par ${byMonth ? 'mois' : 'compte'}`,
+    rows, series, fmt: fmtMoney, normalize: share,
+    ariaLabel: share
+      ? `Part de chaque intention par ${byMonth ? 'mois' : 'compte'}, base 100`
+      : `Coût par intention et par ${byMonth ? 'mois' : 'compte'}`,
   });
 }
 
@@ -2400,6 +2478,10 @@ async function loadTerms() {
     [{ key: 'account', label: 'Par compte' }, { key: 'month', label: 'Par mois' }],
     () => S.intentDim, (k) => { S.intentDim = k; renderTermsSection(); });
 
+  buildSegmented(els.intentScale,
+    [{ key: 'share', label: 'Base 100' }, { key: 'abs', label: 'Absolu' }],
+    () => S.intentScale, (k) => { S.intentScale = k; renderTermsSection(); });
+
   buildViewToggles();
   renderTermsSection();
 }
@@ -2690,6 +2772,7 @@ function writeHash() {
     p.set('sem', '1');
     if (S.driftX !== 'cost') p.set('dx', S.driftX);
     if (S.intentDim !== 'account') p.set('id', S.intentDim);
+    if (S.intentScale !== 'share') p.set('is', S.intentScale);
     if (S.ngramMetric !== 'cost') p.set('nm', S.ngramMetric);
   }
   const hash = p.toString();
@@ -2719,6 +2802,7 @@ function readHash() {
 
   if (DRIFT_X[p.get('dx')]) S.driftX = p.get('dx');
   if (['account', 'month'].includes(p.get('id'))) S.intentDim = p.get('id');
+  if (['share', 'abs'].includes(p.get('is'))) S.intentScale = p.get('is');
   if (NGRAM_METRICS[p.get('nm')]) S.ngramMetric = p.get('nm');
   // Chargement différé : la section sémantique n'est demandée que si le lien
   // le réclame, le reste du rapport ne doit pas l'attendre.
@@ -2867,6 +2951,7 @@ function cacheEls() {
     semLoad: 'sem-load', semLoadNote: 'sem-load-note', semContent: 'sem-content',
     driftBody: 'drift-body', driftSub: 'drift-sub', driftX: 'drift-x',
     intentBody: 'intent-body', intentSub: 'intent-sub', intentDim: 'intent-dim',
+    intentScale: 'intent-scale',
     ngramBody: 'ngram-body', ngramSub: 'ngram-sub', ngramMetric: 'ngram-metric',
   };
   for (const k in ids) els[k] = document.getElementById(ids[k]);
