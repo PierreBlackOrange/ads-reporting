@@ -335,6 +335,23 @@ code {
 }
 .optrow[aria-disabled="true"] { opacity: 0.45; cursor: default; }
 
+/* Recherche épinglée en haut du panneau : la liste défile, le champ reste. */
+.dropdown__search {
+  position: sticky;
+  top: -5px;
+  z-index: 1;
+  padding: 3px 3px 6px;
+  margin: -3px -3px 0;
+  background: var(--surface-1);
+}
+
+.dropdown__empty {
+  margin: 0;
+  padding: 12px 9px;
+  font-size: 13px;
+  color: var(--text-muted);
+}
+
 .dropdown__sep { height: 1px; margin: 5px 0; background: var(--border); border: 0; }
 .dropdown__footer { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border); }
 

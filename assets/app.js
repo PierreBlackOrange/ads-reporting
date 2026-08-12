@@ -300,22 +300,60 @@ function timeBuckets(rows, grain) {
   return { keys, pos, lo, hi };
 }
 
-/* Repli des entités au-delà de 7 : identité stable, aucune teinte générée. */
-function entitySlot(index) {
-  return index < MAX_ENTITY_SLOTS ? index + 1 : FOLD_SLOT;
+/**
+ * Attribue les 7 créneaux de teinte aux comptes qui pèsent réellement.
+ *
+ * Le classement se fait sur le coût de TOUT le jeu de données, jamais sur la
+ * sélection courante : c'est une propriété fixe du fichier de données, donc
+ * filtrer ne repeint jamais une série — la couleur suit le compte, pas son rang
+ * dans la vue. Un ordre alphabétique, lui, donnerait les 7 teintes aux premiers
+ * comptes de la liste, souvent dormants, et noierait tout le trafic réel dans
+ * « Autres ».
+ */
+function computeAccountSlots() {
+  const n = S.data.accounts.length;
+  const cost = new Array(n).fill(0);
+  for (const f of S.data.facts) cost[S.data.campaigns[f[F.CAMP]].account] += f[F.COST];
+
+  // Départage par index pour que l'ordre soit totalement déterministe.
+  const ranked = cost
+    .map((c, i) => ({ i, c }))
+    .sort((a, b) => b.c - a.c || a.i - b.i);
+
+  S.accountCost = cost;
+  S.slotOf = new Array(n).fill(FOLD_SLOT);
+  S.accountRank = new Array(n).fill(Infinity);
+
+  ranked.forEach((entry, rank) => {
+    S.accountRank[entry.i] = rank;
+    if (rank < MAX_ENTITY_SLOTS) S.slotOf[entry.i] = rank + 1;
+  });
+
+  // Le repli ne compte que les comptes ayant réellement dépensé : annoncer
+  // « Autres (79 comptes) » quand 67 sont dormants serait trompeur.
+  S.foldedCount = ranked.filter((e) => e.c > 0 && S.accountRank[e.i] >= MAX_ENTITY_SLOTS).length;
+  S.topAccounts = ranked.slice(0, MAX_ENTITY_SLOTS).filter((e) => e.c > 0).map((e) => e.i);
 }
+
+const entitySlot = (index) => (S.slotOf ? S.slotOf[index] : FOLD_SLOT) || FOLD_SLOT;
+const isFolded = (index) => !S.accountRank || S.accountRank[index] >= MAX_ENTITY_SLOTS;
+const accountKey = (i) => (isFolded(i) ? 'other' : String(i));
+
 function accountSeries() {
-  const accs = S.data.accounts;
-  const out = [];
-  for (let i = 0; i < Math.min(accs.length, MAX_ENTITY_SLOTS); i++) {
-    out.push({ key: String(i), name: accs[i].name, slot: i + 1 });
-  }
-  if (accs.length > MAX_ENTITY_SLOTS) {
-    out.push({ key: 'other', name: `Autres (${accs.length - MAX_ENTITY_SLOTS} comptes)`, slot: FOLD_SLOT });
+  const out = S.topAccounts.map((i) => ({
+    key: String(i),
+    name: S.data.accounts[i].name,
+    slot: entitySlot(i),
+  }));
+  if (S.foldedCount > 0) {
+    out.push({
+      key: 'other',
+      name: `Autres (${S.foldedCount} compte${S.foldedCount > 1 ? 's' : ''})`,
+      slot: FOLD_SLOT,
+    });
   }
   return out;
 }
-const accountKey = (i) => (i < MAX_ENTITY_SLOTS ? String(i) : 'other');
 
 /* ── Primitives SVG ───────────────────────────────────────────────────────── */
 
@@ -755,9 +793,17 @@ function renderBarChart(container, cfg) {
   const padB = 6;
   const H = items.length * rowH + padT + padB;
 
-  const NAME_MAX = 30;
+  const NAME_MAX = 34;
   const SUB_MAX = 26;
-  const trunc = (s, n) => (s.length > n ? s.slice(0, n - 1) + '…' : s);
+  // Troncature par le milieu : les conventions de nommage publicitaires
+  // préfixent lourdement (« [FR] - [SC] - [HM] - … »), si bien que couper la fin
+  // rend toutes les lignes identiques. Les deux extrémités portent le sens.
+  const trunc = (s, n) => {
+    if (s.length <= n) return s;
+    const head = Math.ceil((n - 1) * 0.45);
+    const tail = n - 1 - head;
+    return s.slice(0, head) + '…' + s.slice(s.length - tail);
+  };
 
   const nameW = Math.max(...items.map((i) => trunc(i.label, NAME_MAX).length)) * 6.6;
   const subW = twoLine
@@ -861,8 +907,14 @@ function renderStackedBars(container, cfg) {
   const padT = 6;
   const H = rows.length * rowH + padT + 6;
 
-  const maxLabel = Math.min(26, Math.max(...rows.map((r) => r.label.length)));
-  const padL = Math.min(210, Math.max(90, maxLabel * 6.6));
+  const LABEL_MAX = 28;
+  const shorten = (s) => {
+    if (s.length <= LABEL_MAX) return s;
+    const head = Math.ceil((LABEL_MAX - 1) * 0.55);
+    return s.slice(0, head) + '…' + s.slice(s.length - (LABEL_MAX - 1 - head));
+  };
+  const maxLabel = Math.min(LABEL_MAX, Math.max(...rows.map((r) => shorten(r.label).length)));
+  const padL = Math.min(220, Math.max(90, maxLabel * 6.6));
   const totals = rows.map((r) => series.reduce((a, s) => a + (r.values[s.key] || 0), 0));
   const maxTotal = Math.max(...totals, 1);
   const axisFmt = axisFormatter(fmt, maxTotal);
@@ -879,7 +931,7 @@ function renderStackedBars(container, cfg) {
   rows.forEach((r, ri) => {
     const yTop = padT + ri * rowH + (rowH - barH) / 2;
     const total = totals[ri];
-    const short = r.label.length > 26 ? r.label.slice(0, 25) + '…' : r.label;
+    const short = shorten(r.label);
     textNode('text', {
       class: 'axis-label', x: padL - 10, y: yTop + barH / 2 + 3.5, 'text-anchor': 'end',
     }, short, svg);
@@ -1293,9 +1345,7 @@ function tsData(sel) {
     : accountSeries().filter((s) => {
         // On n'affiche que les comptes réellement présents dans la sélection.
         if (!S.accounts.size) return true;
-        if (s.key === 'other') {
-          return [...S.accounts].some((i) => i >= MAX_ENTITY_SLOTS);
-        }
+        if (s.key === 'other') return [...S.accounts].some(isFolded);
         return S.accounts.has(Number(s.key));
       });
 
@@ -1612,30 +1662,46 @@ function renderMix(sel) {
     row[k] = (row[k] || 0) + f[F.COST];
   }
 
-  const rows = [...perAccount.entries()]
+  const allRows = [...perAccount.entries()]
     .map(([ai, values]) => ({
       label: d.accounts[ai]?.name || `Compte ${ai}`,
       values,
       total: Object.values(values).reduce((a, b) => a + b, 0),
     }))
+    .filter((r) => r.total > 0)
     .sort((a, b) => b.total - a.total);
 
+  // Le graphique est plafonné pour rester lisible ; le tableau, lui, reste
+  // exhaustif — c'est sa raison d'être.
+  const MAX_ROWS = 12;
+  let rows = allRows;
+  if (allRows.length > MAX_ROWS) {
+    const tail = allRows.slice(MAX_ROWS);
+    const merged = { label: `Autres (${tail.length} comptes)`, values: {}, total: 0 };
+    for (const r of tail) {
+      for (const k in r.values) merged.values[k] = (merged.values[k] || 0) + r.values[k];
+      merged.total += r.total;
+    }
+    rows = [...allRows.slice(0, MAX_ROWS), merged];
+  }
+
   const series = seriesDefs
-    .filter((s) => !S.mixHidden.has(s.key) && rows.some((r) => (r.values[s.key] || 0) > 0))
+    .filter((s) => !S.mixHidden.has(s.key) && allRows.some((r) => (r.values[s.key] || 0) > 0))
     .map((s) => ({ ...s, color: seriesColor(s.slot) }));
 
-  els.mixSub.textContent = `Coût par compte, ventilé par ${dim === 'device' ? 'appareil' : 'réseau'}`;
+  els.mixSub.textContent = `Coût par compte, ventilé par ${dim === 'device' ? 'appareil' : 'réseau'}`
+    + (allRows.length > MAX_ROWS ? ` — ${MAX_ROWS} premiers sur ${allRows.length}` : '');
 
   if (S.views.mix === 'table') {
     const cols = [{ key: 'label', label: 'Compte', text: true }];
     for (const s of series) cols.push({ key: s.key, label: s.name, fmt: (v) => fmtMoney(v || 0) });
     cols.push({ key: 'total', label: 'Total', fmt: (v) => fmtMoney(v) });
-    const foot = { label: 'Total', total: rows.reduce((a, r) => a + r.total, 0) };
-    for (const s of series) foot[s.key] = rows.reduce((a, r) => a + (r.values[s.key] || 0), 0);
+    const foot = { label: 'Total', total: allRows.reduce((a, r) => a + r.total, 0) };
+    for (const s of series) foot[s.key] = allRows.reduce((a, r) => a + (r.values[s.key] || 0), 0);
     renderTable(els.mixBody, {
       cols, foot, scroll: true,
       caption: `Coût par compte et par ${dim === 'device' ? 'appareil' : 'réseau'}`,
-      rows: rows.map((r) => ({ label: r.label, total: r.total, ...r.values })),
+      rows: allRows.map((r) => ({ label: r.label, total: r.total, ...r.values })),
     });
     return;
   }
@@ -1827,32 +1893,75 @@ function buildAccountPanel() {
   panel.replaceChildren();
   const accs = S.data.accounts;
 
+  // Un MCC peut compter des dizaines de comptes : sans recherche ni tri par
+  // dépense, la liste est une corvée de défilement.
+  const withSearch = accs.length > 12;
+  const q = (S.accountQuery || '').trim().toLowerCase();
+
+  if (withSearch) {
+    const box = document.createElement('div');
+    box.className = 'dropdown__search';
+    const input = document.createElement('input');
+    input.type = 'search';
+    input.className = 'input';
+    input.placeholder = 'Rechercher un compte…';
+    input.value = S.accountQuery || '';
+    input.autocomplete = 'off';
+    input.addEventListener('input', () => {
+      S.accountQuery = input.value;
+      buildAccountPanel();
+      // Le panneau est reconstruit : il faut rendre le focus au champ.
+      const fresh = panel.querySelector('.dropdown__search input');
+      if (fresh) { fresh.focus(); fresh.setSelectionRange(fresh.value.length, fresh.value.length); }
+    });
+    // Évite que la touche Espace ou Entrée referme le <details> parent.
+    input.addEventListener('keydown', (ev) => ev.stopPropagation());
+    box.appendChild(input);
+    panel.appendChild(box);
+  }
+
+  const actifs = S.accountCost.reduce((n, c) => n + (c > 0 ? 1 : 0), 0);
+
   panel.appendChild(optionRow({
     checked: S.accounts.size === 0,
     label: 'Tous les comptes',
-    meta: String(accs.length),
+    meta: actifs === accs.length ? `${accs.length}` : `${actifs} actifs / ${accs.length}`,
     onClick: () => { S.accounts.clear(); onFilterChange(); },
   }));
   panel.appendChild(document.createElement('hr')).className = 'dropdown__sep';
 
-  accs.forEach((a, i) => {
+  // Les comptes qui dépensent d'abord, du plus gros au plus petit ; les dormants
+  // ensuite, désactivés — ils n'ont rien à montrer.
+  const order = accs
+    .map((a, i) => ({ a, i }))
+    .filter(({ a, i }) => !q || a.name.toLowerCase().includes(q) || String(a.id).includes(q))
+    .sort((x, y) => (S.accountCost[y.i] - S.accountCost[x.i]) || x.a.name.localeCompare(y.a.name, 'fr'));
+
+  if (!order.length) {
+    const none = document.createElement('p');
+    none.className = 'dropdown__empty';
+    none.textContent = 'Aucun compte ne correspond.';
+    panel.appendChild(none);
+    return;
+  }
+
+  for (const { a, i } of order) {
+    const cost = S.accountCost[i] || 0;
     panel.appendChild(optionRow({
       checked: S.accounts.size === 0 || S.accounts.has(i),
       label: a.name,
-      meta: a.id,
-      swatch: seriesColor(entitySlot(i)),
-      disabled: !a.has_data,
+      meta: cost > 0 ? compactly(fmtMoney, cost) : 'aucune dépense',
+      swatch: cost > 0 ? seriesColor(entitySlot(i)) : null,
+      disabled: cost <= 0,
       onClick: () => {
         // Premier clic depuis « tous » : on isole le compte cliqué.
         if (S.accounts.size === 0) S.accounts = new Set([i]);
-        else if (S.accounts.has(i)) {
-          S.accounts.delete(i);
-          if (S.accounts.size === 0) S.accounts = new Set();   // retour à « tous »
-        } else S.accounts.add(i);
+        else if (S.accounts.has(i)) S.accounts.delete(i);
+        else S.accounts.add(i);
         onFilterChange();
       },
     }));
-  });
+  }
 }
 
 function buildSetPanel(panel, values, labels, set) {
@@ -2240,8 +2349,10 @@ async function init() {
   }
 
   S.data = data;
+  // Doit précéder tout rendu : les couleurs de série en dépendent.
+  computeAccountSlots();
   CURRENCY = data.meta && data.meta.currency && data.meta.currency !== 'MIXED'
-    ? data.meta.currency : (data.accounts[0] && data.accounts[0].currency) || 'CHF';
+    ? data.meta.currency : (data.accounts[0] && data.accounts[0].currency) || 'EUR';
 
   setupHeader();
   readHash();

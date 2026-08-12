@@ -44,7 +44,11 @@ from pathlib import Path
 
 # ── Constantes ────────────────────────────────────────────────────────────────
 
-API_VERSION = "v21"  # si Google sunsette cette version, changez ce seul champ
+# Google bloque les versions dépréciées (v20 et v21 le sont depuis août 2026).
+# Pour trouver les versions acceptées, appelez une requête triviale en faisant
+# varier ce numéro : une version retirée répond UNSUPPORTED_VERSION, une version
+# inexistante répond 404.
+API_VERSION = "v25"
 ADS_ENDPOINT = "https://googleads.googleapis.com/{v}/customers/{cid}/googleAds:searchStream"
 TOKEN_ENDPOINT = "https://oauth2.googleapis.com/token"
 
@@ -206,17 +210,48 @@ def http_post_json(url: str, payload: dict | None, headers: dict, *, form: dict 
 
 
 class ApiError(RuntimeError):
+    """
+    Erreur d'API Google Ads.
+
+    Le message de premier niveau est toujours le même générique
+    (« Request contains an invalid argument »). La cause réelle est enfouie dans
+    details[].errors[], avec un code d'erreur exploitable : on l'extrait, sinon
+    tout diagnostic devient une devinette.
+    """
+
     def __init__(self, status: int, detail: str):
         self.status = status
         self.detail = detail
-        message = detail
+        self.codes: list[str] = []
+        parts: list[str] = []
+
         try:
             parsed = json.loads(detail)
-            err = parsed[0] if isinstance(parsed, list) else parsed
-            message = err.get("error", {}).get("message", detail)
-        except (json.JSONDecodeError, KeyError, IndexError, AttributeError):
-            pass
-        super().__init__(f"HTTP {status} — {message}")
+            err = (parsed[0] if isinstance(parsed, list) else parsed).get("error", {})
+            generic = err.get("message", "")
+
+            for d in err.get("details", []) or []:
+                for e in d.get("errors", []) or []:
+                    msg = e.get("message", "")
+                    code = e.get("errorCode") or {}
+                    # errorCode est un objet à une seule clé, ex. {"requestError": "UNSUPPORTED_VERSION"}
+                    label = next(
+                        (f"{k}.{v}" for k, v in code.items() if isinstance(v, str)), ""
+                    )
+                    if label:
+                        self.codes.append(label)
+                    parts.append(f"{label}: {msg}" if label else msg)
+
+            if not parts and generic:
+                parts.append(generic)
+        except (json.JSONDecodeError, KeyError, IndexError, AttributeError, TypeError):
+            parts.append(detail[:300])
+
+        super().__init__(f"HTTP {status} — " + " | ".join(p for p in parts if p))
+
+    @property
+    def is_version_error(self) -> bool:
+        return any("UNSUPPORTED_VERSION" in c for c in self.codes)
 
 
 def get_access_token(cfg: dict) -> str:
@@ -387,8 +422,11 @@ def build_dataset(
 
     account_index = {acc["id"]: i for i, acc in enumerate(accounts)}
 
-    # cost_micros → unité monétaire, avec normalisation multi-devises optionnelle.
-    report_currency, rates = resolve_currency(accounts, cfg)
+    # La devise du rapport ne se déduit que des comptes qui ont réellement des
+    # données : un compte dormant dans une autre devise ferait basculer à tort
+    # un rapport homogène en « MIXED », avec son bandeau d'avertissement.
+    active = [a for a in accounts if per_account_rows.get(a["id"])]
+    report_currency, rates = resolve_currency(active or accounts, cfg)
 
     # Agrégation : une ligne par (date, campagne, device, réseau).
     buckets: dict[tuple, list] = {}
@@ -509,7 +547,7 @@ def resolve_currency(accounts: list[dict], cfg: dict) -> tuple[str, dict[str, fl
         return target, resolved
 
     print(
-        "\n  ATTENTION — comptes en plusieurs devises : "
+        "\n  ATTENTION — comptes actifs en plusieurs devises : "
         + ", ".join(currencies)
         + "\n  Les montants ne sont PAS convertis. Les totaux inter-comptes "
         "(coût, valeur de conversion, CPA, ROAS) additionnent des devises "
@@ -601,7 +639,14 @@ def main() -> int:
         try:
             rows = fetch_account_performance(cfg, access_token, account, start, end)
         except ApiError as exc:
-            # Un compte inaccessible ne doit pas faire échouer tout le rapport.
+            # Une version d'API retirée fait échouer tous les comptes : inutile
+            # de parcourir les 85 suivants pour le redécouvrir.
+            if exc.is_version_error:
+                die(
+                    f"L'API refuse la version {API_VERSION} : {exc}\n"
+                    "Modifiez API_VERSION en tête de ce script (essayez le numéro suivant)."
+                )
+            # Un compte inaccessible, en revanche, ne doit pas faire échouer le rapport.
             print(f"ÉCHEC ({exc})")
             failures.append((label, str(exc)))
             continue
