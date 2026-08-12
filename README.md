@@ -335,12 +335,15 @@ mieux qu'un total faussement rassurant.
 Le partage se fait **au compte, pas à la campagne** : dans un compte qui suit la
 valeur, une campagne à zéro valeur est une vraie perte et doit rester.
 
-Le tableau liste tout et se trie par colonne. Le graphique, lui, montre les 7
-meilleures et les 7 plus déficitaires — les deux versants, jamais un seul. En
-mode taux, il écarte en plus les campagnes pesant moins de 1 % du coût du
-périmètre : 40 EUR de valeur face à 900 EUR de coût donnent −2 000 %, un chiffre
-exact et sans portée qui écraserait toutes les autres barres. Le tableau, lui,
-les garde : la colonne Coût y rend le bruit visible.
+Le graphique montre les 7 meilleures et les 7 plus déficitaires — les deux
+versants, jamais un seul. En mode taux, il écarte en plus les campagnes pesant
+moins de 1 % du coût du périmètre : 40 EUR de valeur face à 900 EUR de coût
+donnent −2 000 %, un chiffre exact et sans portée qui écraserait toutes les
+autres barres.
+
+Le bouton **Tableau** donne la liste complète, triable par colonne et avec ligne
+de totaux. Elle garde les campagnes écartées du graphique : la colonne Coût y
+rend le bruit visible plutôt que de le masquer.
 
 ---
 

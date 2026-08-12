@@ -3694,9 +3694,7 @@ function fillSelect(sel, keys, active) {
 function buildViewToggles() {
   for (const host of document.querySelectorAll('.viewtoggle')) {
     const id = host.dataset.viewFor;
-    // Le graphique est la vue par défaut, sauf là où la carte est d'abord un
-    // tableau — la marge se lit ligne à ligne avant de se comparer.
-    if (!(id in S.views)) S.views[id] = host.dataset.viewDefault || 'chart';
+    if (!(id in S.views)) S.views[id] = 'chart';
     buildSegmented(host,
       [{ key: 'chart', label: 'Graphique' }, { key: 'table', label: 'Tableau' }],
       () => S.views[id],
