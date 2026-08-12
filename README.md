@@ -319,6 +319,29 @@ En vue hebdomadaire ou mensuelle, les périodes tronquées par les bornes du fil
 sont signalées sous le titre — sans cela, une semaine d'un seul jour se lirait
 comme un effondrement.
 
+### La marge par campagne
+
+**Marge = valeur de conversion − coût**, sur la période filtrée. Le **taux de
+marge** rapporte cette marge à la valeur produite (marge ÷ valeur de conversion),
+pas au coût.
+
+La mesure suppose que le compte remonte une valeur de conversion. Les campagnes
+dont le compte n'en remonte **aucune** sur la période sont écartées du calcul :
+leur marge vaudrait mécaniquement l'opposé de leur coût, ce qui serait une perte
+inventée plutôt que constatée. Un bandeau indique combien de campagnes et quel
+coût sont ainsi hors mesure, et dans quels comptes — un angle mort chiffré vaut
+mieux qu'un total faussement rassurant.
+
+Le partage se fait **au compte, pas à la campagne** : dans un compte qui suit la
+valeur, une campagne à zéro valeur est une vraie perte et doit rester.
+
+Le tableau liste tout et se trie par colonne. Le graphique, lui, montre les 7
+meilleures et les 7 plus déficitaires — les deux versants, jamais un seul. En
+mode taux, il écarte en plus les campagnes pesant moins de 1 % du coût du
+périmètre : 40 EUR de valeur face à 900 EUR de coût donnent −2 000 %, un chiffre
+exact et sans portée qui écraserait toutes les autres barres. Le tableau, lui,
+les garde : la colonne Coût y rend le bruit visible.
+
 ---
 
 ## Notes techniques

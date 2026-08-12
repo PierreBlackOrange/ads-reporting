@@ -82,6 +82,19 @@ function fmtRatio(v) {
   return v === 0 ? '0 ×' : `${nf2.format(v)} ×`;
 }
 
+/**
+ * Troncature par le milieu.
+ *
+ * Les conventions de nommage publicitaires préfixent lourdement
+ * (« [FR] - [SC] - [HM] - … ») : couper la fin rend toutes les lignes
+ * identiques. Ce sont les deux extrémités qui portent le sens.
+ */
+function shortenMiddle(s, max, headRatio = 0.5) {
+  if (s.length <= max) return s;
+  const head = Math.ceil((max - 1) * headRatio);
+  return s.slice(0, head) + '…' + s.slice(s.length - (max - 1 - head));
+}
+
 /** Un seul format pour toute une échelle, choisi d'après son maximum. */
 function axisFormatter(fmt, max) {
   const compact = Math.abs(max) >= 10000;
@@ -168,6 +181,10 @@ const S = {
   topMetric: 'cost',
   mixDim: 'device',
   mixHidden: new Set(),
+  marginMeasure: 'margin',
+  // Tri propre à la marge : le tableau de détail garde le sien, les deux
+  // répondent à des questions différentes.
+  marginSort: { col: 'margin', dir: -1 },
   views: {},             // id de carte → 'chart' | 'table'
   sort: { col: 'cost', dir: -1 },
 };
@@ -831,15 +848,7 @@ function renderBarChart(container, cfg) {
 
   const NAME_MAX = 34;
   const SUB_MAX = 26;
-  // Troncature par le milieu : les conventions de nommage publicitaires
-  // préfixent lourdement (« [FR] - [SC] - [HM] - … »), si bien que couper la fin
-  // rend toutes les lignes identiques. Les deux extrémités portent le sens.
-  const trunc = (s, n) => {
-    if (s.length <= n) return s;
-    const head = Math.ceil((n - 1) * 0.45);
-    const tail = n - 1 - head;
-    return s.slice(0, head) + '…' + s.slice(s.length - tail);
-  };
+  const trunc = (s, n) => shortenMiddle(s, n, 0.45);
 
   const nameW = Math.max(...items.map((i) => trunc(i.label, NAME_MAX).length)) * 6.6;
   const subW = twoLine
@@ -962,11 +971,7 @@ function renderStackedBars(container, cfg) {
   const H = rows.length * rowH + padT + 6;
 
   const LABEL_MAX = 28;
-  const shorten = (s) => {
-    if (s.length <= LABEL_MAX) return s;
-    const head = Math.ceil((LABEL_MAX - 1) * 0.55);
-    return s.slice(0, head) + '…' + s.slice(s.length - (LABEL_MAX - 1 - head));
-  };
+  const shorten = (s) => shortenMiddle(s, LABEL_MAX, 0.55);
   const maxLabel = Math.min(LABEL_MAX, Math.max(...rows.map((r) => shorten(r.label).length)));
   const padL = Math.min(220, Math.max(90, maxLabel * 6.6));
   const totals = rows.map((r) => series.reduce((a, s) => a + (r.values[s.key] || 0), 0));
@@ -1764,6 +1769,220 @@ function renderTop(rows) {
   });
 }
 
+/* ════════════════════════════════════════════════════════════════════════════
+   Marge par campagne
+
+   Marge = valeur de conversion − coût, sur la période filtrée.
+
+   La mesure ne vaut que si le compte remonte une valeur de conversion. Quand
+   il n'en remonte aucune, la marge vaut mécaniquement l'opposé du coût : ce
+   serait une perte inventée, pas une perte constatée. Ces campagnes sont donc
+   écartées du calcul, et le coût qu'elles représentent est affiché — sans quoi
+   « −27 000 » se lirait comme un résultat.
+
+   Le partage se fait au compte et non à la campagne : dans un compte qui suit
+   la valeur, une campagne à zéro valeur est une vraie perte, qui doit rester.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+const MARGIN_CHART_ROWS = 14;
+/** Part du coût du périmètre sous laquelle un taux de marge n'est plus lisible. */
+const MARGIN_RATE_FLOOR = 0.01;
+
+const MARGIN_MEASURES = {
+  margin: {
+    label: 'Marge',
+    calc: (r) => r.convValue - r.cost,
+    fmt: fmtMoney,
+    axisRight: '→ bénéficiaires', axisLeft: 'déficitaires ←',
+  },
+  rate: {
+    label: 'Taux de marge',
+    // Rapportée à la valeur produite : « ce que je garde sur ce que je génère ».
+    // Sans valeur, le rapport n'existe pas — il vaut mieux « — » qu'un −100 %
+    // qui laisserait croire à une mesure.
+    calc: (r) => (r.convValue > 0 ? (r.convValue - r.cost) / r.convValue : NaN),
+    fmt: fmtPct,
+    axisRight: '→ bénéficiaires', axisLeft: 'déficitaires ←',
+  },
+};
+
+/**
+ * Sépare les campagnes mesurables de celles dont le compte ne suit pas la valeur.
+ * Le verdict est rendu sur la sélection courante : un compte sans valeur sur la
+ * période filtrée n'est pas mesurable sur cette période, quoi qu'il en soit
+ * ailleurs.
+ */
+function splitByValueTracking(rows) {
+  const valueByAccount = new Map();
+  for (const r of rows) {
+    valueByAccount.set(r.accountIdx, (valueByAccount.get(r.accountIdx) || 0) + r.convValue);
+  }
+  const tracked = [];
+  const untracked = [];
+  for (const r of rows) {
+    ((valueByAccount.get(r.accountIdx) > 0) ? tracked : untracked).push(r);
+  }
+  return { tracked, untracked };
+}
+
+function renderMargin(rows) {
+  const m = MARGIN_MEASURES[S.marginMeasure];
+  const { tracked, untracked } = splitByValueTracking(rows.filter((r) => r.cost > 0));
+
+  const enriched = tracked.map((r) => ({
+    ...r,
+    margin: r.convValue - r.cost,
+    marginRate: r.convValue > 0 ? (r.convValue - r.cost) / r.convValue : NaN,
+  }));
+
+  const totCost = enriched.reduce((s, r) => s + r.cost, 0);
+  const totValue = enriched.reduce((s, r) => s + r.convValue, 0);
+  const totMargin = totValue - totCost;
+  const winners = enriched.filter((r) => r.margin > 0).length;
+  const losers = enriched.filter((r) => r.margin < 0).length;
+
+  const bits = [
+    `Valeur de conversion moins coût, sur la période filtrée`,
+    `${winners} campagne(s) bénéficiaire(s), ${losers} déficitaire(s)`,
+    `marge totale ${fmtMoney(totMargin)}`,
+  ];
+  if (S.marginMeasure === 'rate') {
+    bits.push('taux de marge = marge ÷ valeur de conversion');
+  }
+  // Le graphique ne montre qu'une tête de liste : le dire, sinon 14 barres se
+  // liraient comme l'ensemble du portefeuille.
+  if (S.views.margin !== 'table') {
+    if (enriched.length > MARGIN_CHART_ROWS) {
+      bits.push(`graphique : les ${MARGIN_CHART_ROWS / 2} meilleures et les `
+        + `${MARGIN_CHART_ROWS / 2} plus déficitaires`);
+    }
+    if (S.marginMeasure === 'rate') {
+      bits.push(`campagnes sous ${fmtPct(MARGIN_RATE_FLOOR)} du coût total `
+        + `écartées du graphique, leur taux serait du bruit`);
+    }
+  }
+  els.marginSub.textContent = bits.join(' · ');
+
+  // Le coût écarté est nommé, pas seulement compté : « 3 campagnes exclues »
+  // ne dit pas si l'angle mort pèse 500 EUR ou 50 000.
+  if (untracked.length) {
+    const uCost = untracked.reduce((s, r) => s + r.cost, 0);
+    const uAccounts = [...new Set(untracked.map((r) => r.account))].sort();
+    els.marginNote.replaceChildren();
+    const s = document.createElement('strong');
+    s.textContent = 'Périmètre.';
+    els.marginNote.appendChild(s);
+    const d = document.createElement('span');
+    d.textContent =
+      `${untracked.length} campagne(s) écartée(s), ${fmtMoney(uCost)} de coût `
+      + `(${fmtPct(totCost + uCost ? uCost / (totCost + uCost) : 0)} du total) : `
+      + `leur compte ne remonte aucune valeur de conversion sur cette période, `
+      + `leur marge serait l'opposé de leur coût plutôt qu'un résultat. `
+      + `Compte(s) concerné(s) : ${uAccounts.join(', ')}.`;
+    els.marginNote.appendChild(d);
+    els.marginNote.hidden = false;
+  } else {
+    els.marginNote.hidden = true;
+  }
+
+  if (!enriched.length) {
+    // Des compteurs à zéro se liraient comme un résultat ; il n'y a pas de
+    // mesure du tout.
+    els.marginSub.textContent = 'Valeur de conversion moins coût, sur la période filtrée.';
+    emptyState(els.marginBody, untracked.length
+      ? `Aucun compte de cette sélection ne remonte de valeur de conversion : `
+        + `la marge n'y est pas mesurable.`
+      : `Aucune dépense sur cette sélection.`);
+    return;
+  }
+
+  if (S.views.margin === 'table') {
+    const { col, dir } = S.marginSort;
+    const sorted = [...enriched].sort((a, b) => {
+      const av = a[col];
+      const bv = b[col];
+      if (typeof av === 'string' || typeof bv === 'string') {
+        return String(av).localeCompare(String(bv), 'fr') * -dir;
+      }
+      // Un taux non calculable ne doit pas s'intercaler dans le classement.
+      const an = isFinite(av) ? av : -Infinity;
+      const bn = isFinite(bv) ? bv : -Infinity;
+      return (an - bn) * dir;
+    });
+
+    renderTable(els.marginBody, {
+      scroll: true,
+      caption: 'Marge par campagne',
+      cols: MARGIN_COLS,
+      sort: S.marginSort,
+      onSort: (key) => {
+        if (S.marginSort.col === key) S.marginSort.dir *= -1;
+        else S.marginSort = { col: key, dir: key === 'name' ? 1 : -1 };
+        render();
+      },
+      rows: sorted.map((r) => ({
+        ...r, _sub: r.account, _swatch: seriesColor(entitySlot(r.accountIdx)),
+      })),
+      foot: {
+        name: `Total · ${enriched.length} campagnes`,
+        cost: totCost,
+        convValue: totValue,
+        margin: totMargin,
+        marginRate: totValue > 0 ? totMargin / totValue : NaN,
+        roas: totCost ? totValue / totCost : NaN,
+      },
+    });
+    return;
+  }
+
+  // Graphique : les campagnes qui pèsent le plus dans un sens ou dans l'autre.
+  // Le classement se fait sur la valeur absolue, sinon une moitié du graphique
+  // ne montrerait que des queues proches de zéro.
+  const key = S.marginMeasure === 'rate' ? 'marginRate' : 'margin';
+
+  // Un taux n'a de sens que sur un volume suffisant : 40 EUR de valeur face à
+  // 900 EUR de coût donnent −2 000 %, un chiffre exact et sans portée, qui
+  // écraserait l'échelle de toutes les autres barres. Le seuil est relatif au
+  // périmètre affiché, pour rester valable quel que soit le filtre. Le tableau,
+  // lui, garde tout : la colonne Coût y rend le bruit visible.
+  const floor = S.marginMeasure === 'rate' ? totCost * MARGIN_RATE_FLOOR : 0;
+  const eligible = enriched.filter((r) => isFinite(r[key]) && r.cost >= floor);
+
+  // Les deux extrémités, pas les plus grosses valeurs absolues : classer sur
+  // |marge| peut ne remonter que des bénéfices et laisser croire que rien ne
+  // perd d'argent. Un graphique divergent doit montrer ses deux versants.
+  const ranked = [...eligible].sort((a, b) => b[key] - a[key]);
+  const half = Math.floor(MARGIN_CHART_ROWS / 2);
+  const shown = ranked.length <= MARGIN_CHART_ROWS
+    ? ranked
+    : [...ranked.slice(0, half), ...ranked.slice(-half)];
+
+  if (!shown.length) {
+    emptyState(els.marginBody, S.marginMeasure === 'rate'
+      ? `Aucune campagne ne pèse assez sur cette sélection pour qu'un taux de `
+        + `marge y soit lisible. Le tableau les liste toutes.`
+      : 'Aucune marge calculable sur cette sélection.');
+    return;
+  }
+
+  renderDivergingBars(els.marginBody, {
+    rows: shown.map((r) => ({
+      label: r.name,
+      recent: r.convValue, prev: r.cost, delta: r[key],
+      examples: [r.account],
+    })),
+    fmt: m.fmt,
+    upLabel: 'Marge positive', downLabel: 'Marge négative',
+    axisRight: m.axisRight, axisLeft: m.axisLeft,
+    tipRows: (r) => [
+      { name: 'Valeur de conversion', value: fmtMoney(r.recent), color: seriesColor(1) },
+      { name: 'Coût', value: fmtMoney(r.prev), color: seriesColor(8) },
+      { name: m.label, value: (r.delta >= 0 ? '+' : '−') + m.fmt(Math.abs(r.delta)), total: true },
+    ],
+    ariaLabel: `${m.label} par campagne, des plus fortes aux plus faibles`,
+  });
+}
+
 /* ── Rendu : répartition par compte ───────────────────────────────────────── */
 
 function renderMix(sel) {
@@ -1869,6 +2088,16 @@ function renderMix(sel) {
 }
 
 /* ── Rendu : tableau détaillé ─────────────────────────────────────────────── */
+
+const MARGIN_COLS = [
+  { key: 'name',        label: 'Campagne',       text: true },
+  { key: 'cost',        label: 'Coût',           fmt: (v) => fmtMoney(v) },
+  { key: 'convValue',   label: 'Valeur conv.',   fmt: (v) => fmtMoney(v) },
+  { key: 'margin',      label: 'Marge',          fmt: (v) => fmtMoney(v) },
+  { key: 'marginRate',  label: 'Taux de marge',  fmt: fmtPct },
+  { key: 'conversions', label: 'Conv.',          fmt: fmtNum1 },
+  { key: 'roas',        label: 'ROAS',           fmt: fmtRatio },
+];
 
 const DETAIL_COLS = [
   { key: 'name',        label: 'Campagne',       text: true },
@@ -2317,7 +2546,7 @@ function renderDivergingBars(container, cfg) {
   const H = rows.length * rowH + padT + 26;
 
   const LABEL_MAX = 26;
-  const trunc = (s) => (s.length > LABEL_MAX ? s.slice(0, LABEL_MAX - 1) + '…' : s);
+  const trunc = (s) => shortenMiddle(s, LABEL_MAX, 0.45);
   const padL = Math.min(200, Math.max(90, Math.max(...rows.map((r) => trunc(r.label).length)) * 6.4 + 12));
   const maxAbs = Math.max(...rows.map((r) => Math.abs(r.delta)), 1);
   const axisFmt = axisFormatter(fmt, maxAbs);
@@ -2356,12 +2585,21 @@ function renderDivergingBars(container, cfg) {
       class: 'bar-mark', d, fill: seriesColor(up ? 1 : 8),
     }, svg);
 
+    // Une barre proche du maximum pousse son étiquette dans la gouttière des
+    // noms. Elle bascule alors à l'intérieur de la barre, encrée selon la
+    // luminance du remplissage plutôt que de se superposer au libellé.
+    const txt = (up ? '+' : '−') + axisFmt(Math.abs(r.delta));
+    const outerX = up ? mid + w + 8 : mid - w - 8;
+    const needed = txt.length * 6.9 + 8;
+    const inside = up ? (outerX + needed > W) : (outerX - needed < padL);
+    const fill = seriesColor(up ? 1 : 8);
     textNode('text', {
       class: 'mark-label',
-      x: up ? mid + w + 8 : mid - w - 8,
+      x: inside ? (up ? mid + w - 8 : mid - w + 8) : outerX,
       y: yTop + barH / 2 + 3.5,
-      'text-anchor': up ? 'start' : 'end',
-    }, (up ? '+' : '−') + axisFmt(Math.abs(r.delta)), svg);
+      'text-anchor': inside ? (up ? 'end' : 'start') : (up ? 'start' : 'end'),
+      ...(inside ? { fill: inkOn(fill) } : {}),
+    }, txt, svg);
 
     const hit = el('rect', {
       class: 'hit hit--mark', x: 0, y: padT + i * rowH, width: W,
@@ -2379,13 +2617,15 @@ function renderDivergingBars(container, cfg) {
           ex.textContent = r.examples.slice(0, 3).join(' · ');
           n.appendChild(ex);
         }
-        tipRow(n, { name: 'Période récente', value: fmt(r.recent), color: seriesColor(1) });
-        tipRow(n, { name: 'Période précédente', value: fmt(r.prev), color: seriesColor(8) });
-        tipRow(n, {
-          name: 'Variation',
-          value: (up ? '+' : '−') + fmt(Math.abs(r.delta)),
-          total: true,
-        });
+        // Par défaut deux périodes comparées ; un appelant qui compare autre
+        // chose (une marge, deux jours) fournit ses propres lignes plutôt que
+        // d'hériter d'un libellé qui décrirait mal sa mesure.
+        const tips = cfg.tipRows ? cfg.tipRows(r) : [
+          { name: 'Période récente', value: fmt(r.recent), color: seriesColor(1) },
+          { name: 'Période précédente', value: fmt(r.prev), color: seriesColor(8) },
+          { name: 'Variation', value: (up ? '+' : '−') + fmt(Math.abs(r.delta)), total: true },
+        ];
+        for (const t of tips) tipRow(n, t);
       });
     };
     const hide = () => { bar.classList.remove('bar-mark--hover'); Tip.hide(); };
@@ -2400,9 +2640,9 @@ function renderDivergingBars(container, cfg) {
 
   const base = padT + rows.length * rowH;
   textNode('text', { class: 'axis-title', x: mid + 6, y: base + 16, 'text-anchor': 'start' },
-    '→ émergents', svg);
+    cfg.axisRight || '→ émergents', svg);
   textNode('text', { class: 'axis-title', x: mid - 6, y: base + 16, 'text-anchor': 'end' },
-    'déclinants ←', svg);
+    cfg.axisLeft || 'déclinants ←', svg);
 }
 
 function renderNgrams() {
@@ -3454,7 +3694,9 @@ function fillSelect(sel, keys, active) {
 function buildViewToggles() {
   for (const host of document.querySelectorAll('.viewtoggle')) {
     const id = host.dataset.viewFor;
-    if (!(id in S.views)) S.views[id] = 'chart';
+    // Le graphique est la vue par défaut, sauf là où la carte est d'abord un
+    // tableau — la marge se lit ligne à ligne avant de se comparer.
+    if (!(id in S.views)) S.views[id] = host.dataset.viewDefault || 'chart';
     buildSegmented(host,
       [{ key: 'chart', label: 'Graphique' }, { key: 'table', label: 'Tableau' }],
       () => S.views[id],
@@ -3478,6 +3720,7 @@ function writeHash() {
   if (S.tsMode !== 'account') p.set('v', S.tsMode);
   if (S.topMetric !== 'cost') p.set('t', S.topMetric);
   if (S.mixDim !== 'device') p.set('x', S.mixDim);
+  if (S.marginMeasure !== 'margin') p.set('mg', S.marginMeasure);
   if (S.liveAction !== null) p.set('ac', S.liveAction);
   // Permet de partager un lien qui ouvre directement la section sémantique,
   // sans obliger le destinataire à trouver puis cliquer le bouton de chargement.
@@ -3513,6 +3756,10 @@ function readHash() {
   if (['account', 'total'].includes(p.get('v'))) S.tsMode = p.get('v');
   if (METRICS[p.get('t')]) S.topMetric = p.get('t');
   if (['device', 'network'].includes(p.get('x'))) S.mixDim = p.get('x');
+  if (MARGIN_MEASURES[p.get('mg')]) {
+    S.marginMeasure = p.get('mg');
+    S.marginSort = { col: S.marginMeasure === 'rate' ? 'marginRate' : 'margin', dir: -1 };
+  }
   // Le nom d'action est repris tel quel : s'il a disparu du jour, renderLive()
   // le remet à « toutes » plutôt que de laisser des graphiques vides.
   if (p.get('ac')) S.liveAction = p.get('ac');
@@ -3585,6 +3832,7 @@ function doRender() {
   renderRoi(sel);
   renderEfficiency(rows);
   renderTop(rows);
+  renderMargin(rows);
   renderMix(sel);
   renderDetail(rows, sel);
   // La section sémantique suit le filtre de comptes, mais pas celui de période :
@@ -4021,6 +4269,12 @@ function renderLiveCampaigns() {
     })),
     fmt: fmtMoney,
     upLabel: 'Dépense en hausse', downLabel: 'Dépense en baisse',
+    axisRight: '→ dépensent plus', axisLeft: 'dépensent moins ←',
+    tipRows: (r) => [
+      { name: `Aujourd'hui`, value: fmtMoney(r.recent), color: seriesColor(1) },
+      { name: 'J-7 à la même heure', value: fmtMoney(r.prev), color: seriesColor(8) },
+      { name: 'Écart', value: (r.delta >= 0 ? '+' : '−') + fmtMoney(Math.abs(r.delta)), total: true },
+    ],
     ariaLabel: 'Écarts de dépense par campagne face à J-7',
   });
 }
@@ -4328,6 +4582,8 @@ function cacheEls() {
     roiBody: 'roi-body', roiSub: 'roi-sub', effBody: 'eff-body',
     topBody: 'top-body', topSub: 'top-sub', topMetric: 'top-metric',
     mixBody: 'mix-body', mixSub: 'mix-sub', mixDim: 'mix-dim',
+    marginBody: 'margin-body', marginSub: 'margin-sub',
+    marginMeasure: 'margin-measure', marginNote: 'margin-note',
     detailBody: 'detail-body', detailSub: 'detail-sub', exportCsv: 'export-csv',
     semMeta: 'sem-meta', semStatus: 'sem-status', semLoader: 'sem-loader',
     semLoad: 'sem-load', semLoadNote: 'sem-load-note', semContent: 'sem-content',
@@ -4391,6 +4647,20 @@ function wireControls() {
 
   fillSelect(els.topMetric, TOP_METRICS, S.topMetric);
   els.topMetric.addEventListener('change', () => { S.topMetric = els.topMetric.value; render(); });
+
+  fillSelectFrom(els.marginMeasure, MARGIN_MEASURES, S.marginMeasure);
+  els.marginMeasure.addEventListener('change', () => {
+    S.marginMeasure = els.marginMeasure.value;
+    // Le tri suit la mesure affichée : passer au taux sans reclasser laisserait
+    // un tableau ordonné sur une colonne qui n'est plus celle qu'on regarde.
+    if (S.marginSort.col === 'margin' || S.marginSort.col === 'marginRate') {
+      S.marginSort = {
+        col: S.marginMeasure === 'rate' ? 'marginRate' : 'margin',
+        dir: S.marginSort.dir,
+      };
+    }
+    render();
+  });
 
   buildSegmented(els.tsGrain,
     [{ key: 'day', label: 'Jour' }, { key: 'week', label: 'Semaine' }, { key: 'month', label: 'Mois' }],

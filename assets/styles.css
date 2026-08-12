@@ -454,6 +454,16 @@ code {
 .banner--error { border-left-color: var(--delta-bad); }
 .banner span { color: var(--text-secondary); }
 
+/* Bandeau posé à l'intérieur d'une carte : il partage la gouttière du corps
+   plutôt que d'ouvrir la sienne, et se rattache visuellement au contenu. */
+.banner--inline {
+  margin: 0 16px 12px;
+  border: 0;
+  border-left: 3px solid var(--status-warning);
+  background: transparent;
+  padding: 8px 0 8px 12px;
+}
+
 /* ── Sections & cartes ────────────────────────────────────────────────────── */
 
 main {
