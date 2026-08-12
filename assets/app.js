@@ -2684,6 +2684,14 @@ function writeHash() {
   if (S.tsMode !== 'account') p.set('v', S.tsMode);
   if (S.topMetric !== 'cost') p.set('t', S.topMetric);
   if (S.mixDim !== 'device') p.set('x', S.mixDim);
+  // Permet de partager un lien qui ouvre directement la section sémantique,
+  // sans obliger le destinataire à trouver puis cliquer le bouton de chargement.
+  if (S.termsState === 'ready') {
+    p.set('sem', '1');
+    if (S.driftX !== 'cost') p.set('dx', S.driftX);
+    if (S.intentDim !== 'account') p.set('id', S.intentDim);
+    if (S.ngramMetric !== 'cost') p.set('nm', S.ngramMetric);
+  }
   const hash = p.toString();
   // replaceState : on ne pollue pas l'historique à chaque clic de filtre.
   history.replaceState(null, '', hash ? `#${hash}` : location.pathname + location.search);
@@ -2708,6 +2716,13 @@ function readHash() {
   if (['account', 'total'].includes(p.get('v'))) S.tsMode = p.get('v');
   if (METRICS[p.get('t')]) S.topMetric = p.get('t');
   if (['device', 'network'].includes(p.get('x'))) S.mixDim = p.get('x');
+
+  if (DRIFT_X[p.get('dx')]) S.driftX = p.get('dx');
+  if (['account', 'month'].includes(p.get('id'))) S.intentDim = p.get('id');
+  if (NGRAM_METRICS[p.get('nm')]) S.ngramMetric = p.get('nm');
+  // Chargement différé : la section sémantique n'est demandée que si le lien
+  // le réclame, le reste du rapport ne doit pas l'attendre.
+  S.autoLoadTerms = p.get('sem') === '1';
 
   // Un index de compte hors bornes viendrait d'un lien obsolète : on l'ignore.
   const n = S.data.accounts.length;
@@ -2985,6 +3000,8 @@ async function init() {
   readHash();
   wireControls();
   onFilterChange();
+
+  if (S.autoLoadTerms) loadTerms();
 }
 
 document.addEventListener('DOMContentLoaded', init);
