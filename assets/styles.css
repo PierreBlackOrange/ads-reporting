@@ -671,6 +671,13 @@ main {
 
 .live-stale { color: var(--delta-bad); font-weight: 600; }
 
+/* Mention sur une tuile que le filtre d'action ne concerne pas. */
+.kpi__note {
+  font-size: 11px;
+  color: var(--text-muted);
+  font-style: italic;
+}
+
 .loader {
   display: flex;
   flex-wrap: wrap;

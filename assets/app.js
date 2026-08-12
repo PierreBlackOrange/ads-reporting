@@ -3478,6 +3478,7 @@ function writeHash() {
   if (S.tsMode !== 'account') p.set('v', S.tsMode);
   if (S.topMetric !== 'cost') p.set('t', S.topMetric);
   if (S.mixDim !== 'device') p.set('x', S.mixDim);
+  if (S.liveAction !== null) p.set('ac', S.liveAction);
   // Permet de partager un lien qui ouvre directement la section sémantique,
   // sans obliger le destinataire à trouver puis cliquer le bouton de chargement.
   if (S.termsState === 'ready') {
@@ -3512,6 +3513,9 @@ function readHash() {
   if (['account', 'total'].includes(p.get('v'))) S.tsMode = p.get('v');
   if (METRICS[p.get('t')]) S.topMetric = p.get('t');
   if (['device', 'network'].includes(p.get('x'))) S.mixDim = p.get('x');
+  // Le nom d'action est repris tel quel : s'il a disparu du jour, renderLive()
+  // le remet à « toutes » plutôt que de laisser des graphiques vides.
+  if (p.get('ac')) S.liveAction = p.get('ac');
 
   if (DRIFT_X[p.get('dx')]) S.driftX = p.get('dx');
   if (['account', 'month'].includes(p.get('id'))) S.intentDim = p.get('id');
@@ -3532,6 +3536,15 @@ function onFilterChange() {
   buildAccountPanel();
   buildSetPanel(els.devicePanel, S.data.devices, DEVICE_LABELS, S.devices);
   buildSetPanel(els.networkPanel, S.data.networks, NETWORK_LABELS, S.networks);
+  // Le filtre de comptes vaut sur les deux vues : le Live doit se redessiner
+  // même quand on le change depuis le rapport.
+  if (S.liveState === 'ready') renderLive();
+  if (S.view === 'live') {
+    // Le rapport ne se redessine pas ici : c'est lui qui écrit l'URL d'ordinaire.
+    updateFilterSummaries();
+    writeHash();
+    return;
+  }
   render();
 }
 
@@ -3562,7 +3575,10 @@ function doRender() {
   if (S.networks.size) bits.push(`${S.networks.size} réseau(x)`);
   if (S.search.trim()) bits.push(`recherche « ${S.search.trim()} »`);
   bits.push(`${rows.length} campagne(s)`);
-  els.filterStatus.textContent = bits.join(' · ');
+  // Le rapport se redessine aussi quand le Live est affiché (le rAF de render()
+  // peut arriver après setView) : il ne doit pas écraser le statut du direct,
+  // qui décrit un tout autre périmètre.
+  if (S.view === 'report') els.filterStatus.textContent = bits.join(' · ');
 
   renderKpis(sel);
   renderTimeSeries(sel);
@@ -3605,11 +3621,109 @@ Object.assign(S, {
   liveState: 'idle',
   liveMetric: 'cost',
   liveCumul: 'cumul',
+  liveAction: null,   // null = toutes les actions
 });
 
 function liveDelta(cur, ref) {
   if (!isFinite(ref) || ref === 0) return null;
   return (cur - ref) / Math.abs(ref);
+}
+
+/** Indices de comptes de live.json retenus par le filtre. null = tous. */
+function selectedLiveAccounts() {
+  const L = S.live;
+  if (!L || !S.accounts.size) return null;
+  const names = new Set(
+    [...S.accounts].map((i) => S.data.accounts[i] && S.data.accounts[i].name)
+  );
+  return new Set(L.accounts.map((n, i) => (names.has(n) ? i : -1)).filter((i) => i >= 0));
+}
+
+/** Une métrique est-elle rattachable à une action de conversion ? */
+const isConvMetric = (key) => key === 'allconv' || key === 'value';
+
+/**
+ * Série horaire d'une métrique, sur les comptes retenus.
+ *
+ * Quand une action de conversion est sélectionnée, les métriques de conversion
+ * viennent de la table des actions ; les autres (coût, clics, impressions) sont
+ * inchangées, car une dépense n'est pas rattachable à une action. Confondre les
+ * deux laisserait croire à un « coût par action » qui n'existe pas.
+ */
+function liveSeries(day, metricKey) {
+  const L = S.live;
+  const allowed = selectedLiveAccounts();
+  const out = new Array(24).fill(0);
+
+  if (S.liveAction !== null && isConvMetric(metricKey)) {
+    // Colonnes d'une ligne action : [nom, compte, convAuj, convRef, valAuj, valRef]
+    const base = metricKey === 'allconv' ? 2 : 4;
+    const col = base + (day === 'reference' ? 1 : 0);
+    for (const row of L.actions) {
+      if (row[0] !== S.liveAction) continue;
+      if (allowed && !allowed.has(row[1])) continue;
+      const arr = row[col] || [];
+      for (let h = 0; h < 24; h++) out[h] += arr[h] || 0;
+    }
+    return out;
+  }
+
+  const matrix = L[day][metricKey] || [];
+  matrix.forEach((row, ai) => {
+    if (allowed && !allowed.has(ai)) return;
+    for (let h = 0; h < 24; h++) out[h] += row[h] || 0;
+  });
+  return out;
+}
+
+/** Cumul d'une série jusqu'à l'heure en cours. */
+function liveHtd(series) {
+  const nowH = S.live.meta.current_hour;
+  let acc = 0;
+  for (let h = 0; h <= nowH && h < series.length; h++) acc += series[h] || 0;
+  return acc;
+}
+
+/**
+ * Alerte, recalculée dans le navigateur pour suivre les filtres.
+ *
+ * Évaluée sur la dernière heure consolidée uniquement — la plus récente sur
+ * laquelle un zéro veut dire quelque chose plutôt que « pas encore remonté ».
+ * La frontière, elle, reste celle calculée tous comptes confondus : le retard
+ * de remontée est une propriété de la plateforme, et la déduire d'un compte à
+ * faible volume la rendrait instable.
+ */
+function computeLiveAlert() {
+  const L = S.live;
+  const h = L.meta.settled_through;
+  if (h < 0) return null;
+  const minRef = L.meta.min_ref_conv || 3;
+  const cur = liveSeries('today', 'allconv')[h] || 0;
+  const ref = liveSeries('reference', 'allconv')[h] || 0;
+  if (ref < minRef) return null;   // référence trop faible pour conclure
+  if (cur <= 0) return { level: 'alerte', hour: h, current: 0, reference: ref };
+  if (cur < ref * 0.5) return { level: 'vigilance', hour: h, current: cur, reference: ref };
+  return null;
+}
+
+/**
+ * Le filtre de comptes exclut-il tout le périmètre du direct ?
+ *
+ * Le rapport porte sur 86 comptes, le direct sur ceux qui diffusent aujourd'hui.
+ * Filtrer sur un compte absent du direct donnerait des graphiques vides sans
+ * dire pourquoi — on distingue donc ce cas d'une vraie absence de données.
+ */
+function liveOutOfScope() {
+  const a = selectedLiveAccounts();
+  return !!(a && !a.size);
+}
+
+/** Libellé du périmètre courant, pour les sous-titres. */
+function liveScopeLabel() {
+  const allowed = selectedLiveAccounts();
+  const parts = [allowed ? `${allowed.size} compte(s)` : 'tous comptes'];
+  if (S.liveAction !== null) parts.push(`action « ${S.liveAction} »`);
+  return parts.join(' · ');
 }
 
 /** Tuile d'indicateur : valeur du jour, écart à la référence, mise en évidence. */
@@ -3668,12 +3782,22 @@ function liveTile(def, cur, ref) {
 }
 
 function renderLiveKpis() {
-  const L = S.live;
   els.liveKpi.replaceChildren();
   for (const def of LIVE_KPIS) {
-    const t = L.totals[def.key];
-    if (!t) continue;
-    els.liveKpi.appendChild(liveTile(def, t.today, t.ref));
+    const today = liveHtd(liveSeries('today', def.key));
+    const ref = liveHtd(liveSeries('reference', def.key));
+    const tile = liveTile(def, today, ref);
+    // Quand une action est sélectionnée, seules les conversions la reflètent :
+    // il faut le dire sur les tuiles qui restent tous périmètres confondus.
+    if (S.liveAction !== null && !isConvMetric(def.key)) {
+      const note = document.createElement('div');
+      note.className = 'kpi__note';
+      note.textContent = 'toutes actions';
+      note.title = 'Une dépense n\'est pas rattachable à une action de conversion : '
+        + 'ce chiffre ignore le filtre d\'action.';
+      tile.appendChild(note);
+    }
+    els.liveKpi.appendChild(tile);
   }
 }
 
@@ -3695,10 +3819,13 @@ function renderLiveHourly() {
     });
   };
 
+  const rawToday = liveSeries('today', m.key);
+  const rawRef = liveSeries('reference', m.key);
+
   const series = [
     {
       key: 'today', name: `Aujourd'hui`, color: seriesColor(1),
-      values: shape(L.today[m.key], nowH),
+      values: shape(rawToday, nowH),
     },
     {
       // La référence est coupée à l'heure courante elle aussi. Tracer la
@@ -3706,15 +3833,20 @@ function renderLiveHourly() {
       // le lecteur verrait un effondrement là où il n'y a qu'une heure moins
       // avancée. La journée de référence complète reste dans la vue tableau.
       key: 'ref', name: `Même jour, J-7`, color: seriesColor(2),
-      values: shape(L.reference[m.key], nowH),
+      values: shape(rawRef, nowH),
     },
   ];
 
-  const isConv = m.key === 'allconv' || m.key === 'value';
+  const isConv = isConvMetric(m.key);
+  const ignoresAction = S.liveAction !== null && !isConv;
   els.liveHourlySub.textContent =
     `${m.label} · ${cumul ? 'cumul depuis minuit' : 'par heure'} · `
     + `${fmtDateLong(L.meta.date)} face au ${fmtDateLong(L.meta.reference_date)} · `
-    + `heure du compte (${L.meta.timezone})`
+    + `${liveScopeLabel()} · heure du compte (${L.meta.timezone})`
+    + (ignoresAction
+        ? ` — cette mesure ignore le filtre d'action : une dépense n'est pas `
+          + `rattachable à une action de conversion`
+        : '')
     + (isConv && settled >= 0
         ? ` · les heures après ${settled}h remontent encore, elles sous-estiment le réel`
         : '');
@@ -3733,7 +3865,7 @@ function renderLiveHourly() {
       // Le tableau garde la journée de référence entière, que le graphique
       // coupe à l'heure courante : c'est ici qu'on va voir où la journée a fini.
       rows: (() => {
-        const refFull = shape(L.reference[m.key], null);
+        const refFull = shape(rawRef, null);
         return L.hours.map((h) => {
         const a = series[0].values[h];
         const b = refFull[h];
@@ -3767,12 +3899,37 @@ function renderLiveHourly() {
   });
 }
 
+/** Actions agrégées sur les comptes retenus : [{name, today, ref}]. */
+function liveActionTotals() {
+  const L = S.live;
+  const allowed = selectedLiveAccounts();
+  const acc = new Map();
+  for (const row of L.actions || []) {
+    if (allowed && !allowed.has(row[1])) continue;
+    const cur = acc.get(row[0]) || [0, 0];
+    cur[0] += liveHtd(row[2]);
+    cur[1] += liveHtd(row[3]);
+    acc.set(row[0], cur);
+  }
+  return [...acc.entries()]
+    .map(([name, [today, ref]]) => ({ name, today, ref }))
+    .filter((r) => r.today > 0 || r.ref > 0)
+    .sort((a, b) => b.today - a.today);
+}
+
 function renderLiveActions() {
   const L = S.live;
-  const rows = (L.actions || []).filter((r) => r[1] > 0 || r[2] > 0);
+  const rows = liveActionTotals();
+  const allowed = selectedLiveAccounts();
   els.liveActionsSub.textContent =
     `Cumul jusqu'à ${L.meta.current_hour}h, face à la même heure J-7 · `
-    + `mesure « toutes conversions », qui remonte plus vite que la colonne de conversions`;
+    + `${allowed ? `${allowed.size} compte(s)` : 'tous comptes'} · `
+    + `mesure « toutes conversions », qui remonte plus vite que la colonne de conversions`
+    // Ce panneau est la répartition par action : le réduire à la seule action
+    // filtrée le viderait de son objet. Il reste donc complet, et on le dit.
+    + (S.liveAction !== null
+        ? ` — ce panneau garde toutes les actions, c'est lui qui donne la répartition`
+        : '');
 
   if (!rows.length) {
     emptyState(els.liveActionsBody, 'Aucune conversion remontée aujourd\'hui.');
@@ -3790,8 +3947,9 @@ function renderLiveActions() {
         { key: 'delta', label: 'Écart', fmt: (v) => (v === null ? '—' : `${v >= 0 ? '+' : '−'}${nf1.format(Math.abs(v))} %`) },
       ],
       rows: rows.map((r) => {
-        const pct = liveDelta(r[1], r[2]);
-        return { name: r[0], today: r[1], ref: r[2], delta: pct === null ? null : pct * 100 };
+        const pct = liveDelta(r.today, r.ref);
+        return { name: r.name, today: r.today, ref: r.ref,
+                 delta: pct === null ? null : pct * 100 };
       }),
     });
     return;
@@ -3803,9 +3961,9 @@ function renderLiveActions() {
   renderStackedBars(els.liveActionsBody, {
     grouped: true,
     rows: rows.slice(0, 10).map((r) => ({
-      label: r[0],
-      values: { today: r[1], ref: r[2] },
-      total: Math.max(r[1], r[2]),
+      label: r.name,
+      values: { today: r.today, ref: r.ref },
+      total: Math.max(r.today, r.ref),
     })),
     series: [
       { key: 'today', name: `Aujourd'hui`, color: seriesColor(1) },
@@ -3818,14 +3976,20 @@ function renderLiveActions() {
 
 function renderLiveCampaigns() {
   const L = S.live;
-  const rows = (L.campaigns || []).map((r) => ({
-    name: r[0], account: r[1], today: r[2], ref: r[3],
-    conv: r[4], convRef: r[5], delta: r[2] - r[3],
-  }));
+  const allowed = selectedLiveAccounts();
+  const rows = (L.campaigns || [])
+    .filter((r) => !allowed || allowed.has(r[1]))
+    .map((r) => ({
+      name: r[0], account: L.accounts[r[1]] || '', today: r[2], ref: r[3],
+      conv: r[4], convRef: r[5], delta: r[2] - r[3],
+    }));
 
   els.liveCampSub.textContent =
     `Écart de dépense à heure égale, du plus grand au plus petit · `
-    + `au-delà de ${Math.round(LIVE_HIGHLIGHT * 100)} % d'écart relatif, le changement est signalé`;
+    + `${allowed ? `${allowed.size} compte(s)` : 'tous comptes'}`
+    + (S.liveAction !== null
+        ? ` — le filtre d'action ne s'applique pas ici, une dépense n'étant pas `
+          + `rattachable à une action` : '');
 
   if (!rows.length) {
     emptyState(els.liveCampBody, 'Aucune dépense aujourd\'hui ni il y a 7 jours.');
@@ -3866,7 +4030,7 @@ function renderLiveAlert() {
   const slot = els.liveAlertSlot;
   slot.replaceChildren();
 
-  const a = L.alert;
+  const a = computeLiveAlert();
   const settled = L.meta.settled_through;
   const box = document.createElement('div');
 
@@ -3888,6 +4052,7 @@ function renderLiveAlert() {
   }
 
   const critical = a.level === 'alerte';
+  const scope = liveScopeLabel();
   box.className = 'alert-live' + (critical ? ' alert-live--critical' : '');
   const title = document.createElement('span');
   title.className = 'alert-live__title';
@@ -3897,27 +4062,73 @@ function renderLiveAlert() {
   box.appendChild(title);
 
   const detail = document.createElement('span');
-  detail.textContent = critical
+  detail.textContent = (critical
     ? `La même heure il y a 7 jours en comptait ${fmtNum1(a.reference)}. `
       + `Les heures plus récentes ne sont pas évaluées : elles remontent encore.`
     : `${fmtNum1(a.current)} contre ${fmtNum1(a.reference)} il y a 7 jours, `
-      + `soit ${nf1.format((1 - a.current / a.reference) * 100)} % de moins.`;
+      + `soit ${nf1.format((1 - a.current / a.reference) * 100)} % de moins.`)
+    + ` Périmètre : ${scope}.`;
   box.appendChild(detail);
   slot.appendChild(box);
+}
+
+function buildActionPanel() {
+  const panel = els.actionPanel;
+  panel.replaceChildren();
+  const rows = liveActionTotals();
+
+  panel.appendChild(optionRow({
+    checked: S.liveAction === null,
+    label: 'Toutes les actions',
+    meta: String(rows.length),
+    onClick: () => { S.liveAction = null; renderLive(); },
+  }));
+  panel.appendChild(document.createElement('hr')).className = 'dropdown__sep';
+
+  for (const r of rows) {
+    panel.appendChild(optionRow({
+      // Une seule action à la fois : ce filtre sert à isoler, pas à composer.
+      checked: S.liveAction === r.name,
+      label: r.name,
+      meta: fmtNum1(r.today),
+      onClick: () => {
+        S.liveAction = S.liveAction === r.name ? null : r.name;
+        renderLive();
+      },
+    }));
+  }
+
+  els.actionSummary.textContent = S.liveAction === null
+    ? 'Toutes'
+    : (S.liveAction.length > 26 ? S.liveAction.slice(0, 25) + '…' : S.liveAction);
 }
 
 function renderLive() {
   const L = S.live;
   if (!L) return;
+  writeHash();
+
+  // Le filtre d'action est reconstruit à chaque rendu : la liste et les
+  // volumes affichés dépendent des comptes sélectionnés.
+  buildActionPanel();
+  // Une action peut disparaître de la sélection de comptes : sans ce garde-fou
+  // tous les graphiques resteraient vides sans que le filtre le laisse voir.
+  if (S.liveAction !== null
+      && !liveActionTotals().some((r) => r.name === S.liveAction)) {
+    S.liveAction = null;
+    buildActionPanel();
+  }
 
   const gen = new Date(L.meta.generated_at);
   const ageMin = Math.round((Date.now() - gen.getTime()) / 60000);
   const stale = ageMin > 45;
 
   els.liveMeta.replaceChildren();
+  const scoped = selectedLiveAccounts();
+  const nSel = scoped ? scoped.size : L.accounts.length;
   const meta = document.createElement('span');
   meta.textContent =
-    `${L.meta.accounts.length} compte(s) · cumul jusqu'à ${L.meta.current_hour}h `
+    `${nSel} compte(s) sur ${L.accounts.length} · cumul jusqu'à ${L.meta.current_hour}h `
     + `(${L.meta.timezone}) · données arrêtées à `;
   els.liveMeta.appendChild(meta);
   const stamp = document.createElement('span');
@@ -3926,6 +4137,13 @@ function renderLive() {
     + `${String(gen.getMinutes()).padStart(2, '0')}`
     + (ageMin >= 1 ? ` (il y a ${ageMin} min)` : ' (à l\'instant)');
   els.liveMeta.appendChild(stamp);
+
+  // La ligne sous les filtres décrit ce que les filtres cadrent réellement :
+  // en direct ce n'est ni la période ni les campagnes du rapport.
+  const status = [`${fmtDateLong(L.meta.date)}, jusqu'à ${L.meta.current_hour}h`];
+  if (S.accounts.size) status.push(`${nSel} compte(s) en direct sur ${L.accounts.length}`);
+  if (S.liveAction !== null) status.push(`action « ${S.liveAction} »`);
+  els.filterStatus.textContent = status.join(' · ');
 
   if (L.meta.timezone_warning) {
     els.liveTz.replaceChildren();
@@ -3938,6 +4156,22 @@ function renderLive() {
     els.liveTz.hidden = false;
   } else {
     els.liveTz.hidden = true;
+  }
+
+  if (liveOutOfScope()) {
+    const msg = `Aucun des comptes filtrés ne diffuse aujourd'hui. Le direct ne `
+      + `couvre que : ${L.accounts.join(', ')}.`;
+    els.liveAlertSlot.replaceChildren();
+    els.liveKpi.replaceChildren();
+    // Sous-titres vidés : l'état vide de chaque carte porte déjà le message,
+    // le répéter juste au-dessus ne ferait que du bruit.
+    els.liveHourlySub.textContent = '';
+    els.liveActionsSub.textContent = '';
+    els.liveCampSub.textContent = '';
+    emptyState(els.liveHourlyBody, msg);
+    emptyState(els.liveActionsBody, msg);
+    emptyState(els.liveCampBody, msg);
+    return;
   }
 
   renderLiveAlert();
@@ -3988,7 +4222,15 @@ function setView(view) {
   S.view = view;
   els.contenu.hidden = view !== 'report';
   els.viewLive.hidden = view !== 'live';
-  els.filterbar.hidden = view !== 'report';
+  // La barre reste visible sur les deux vues : le filtre de comptes vaut
+  // partout. Seuls les contrôles sans objet sur le Live sont masqués — période,
+  // appareil, réseau et recherche de campagne n'y ont pas de sens, la vue
+  // portant sur la seule journée en cours.
+  els.filterbar.hidden = false;
+  for (const n of document.querySelectorAll('[data-report-only]')) {
+    n.hidden = view !== 'report';
+  }
+  els.filterAction.hidden = view !== 'live';
   for (const b of els.viewTabs.querySelectorAll('button')) {
     const on = b.dataset.key === view;
     b.setAttribute('aria-pressed', String(on));
@@ -4000,6 +4242,7 @@ function setView(view) {
   // mesure zéro, il faut redessiner en revenant sur la vue.
   if (view === 'report') render();
   else if (S.liveState === 'ready') renderLive();
+  else els.filterStatus.textContent = 'Direct en cours de chargement…';
 }
 
 /* ── Bandeaux & en-tête ───────────────────────────────────────────────────── */
@@ -4104,6 +4347,8 @@ function cacheEls() {
     liveMetric: 'live-metric', liveCumul: 'live-cumul',
     liveActionsBody: 'live-actions-body', liveActionsSub: 'live-actions-sub',
     liveCampBody: 'live-camp-body', liveCampSub: 'live-camp-sub',
+    filterAction: 'filter-action', actionPanel: 'action-panel',
+    actionSummary: 'action-summary',
   };
   for (const k in ids) els[k] = document.getElementById(ids[k]);
 }

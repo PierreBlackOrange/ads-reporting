@@ -26,6 +26,88 @@
   </div>
 </header>
 
+<!-- Une seule rangée de filtres, au-dessus de tout ce qu'elle cadre. -->
+<div class="filterbar" id="filterbar" role="search" aria-label="Filtres du rapport">
+  <div class="filterbar__inner">
+
+    <div class="filter" data-report-only>
+      <span class="filter__label" id="lbl-range">Période</span>
+      <div class="segmented" role="group" aria-labelledby="lbl-range" id="range-presets"></div>
+      <details class="dropdown dropdown--tight" id="range-custom-wrap">
+        <summary class="btn btn--ghost" title="Période personnalisée">Personnalisée</summary>
+        <div class="dropdown__panel dropdown__panel--form">
+          <label class="field">
+            <span>Du</span>
+            <input type="date" id="range-start">
+          </label>
+          <label class="field">
+            <span>Au</span>
+            <input type="date" id="range-end">
+          </label>
+          <div class="dropdown__footer">
+            <button type="button" class="btn btn--primary" id="range-apply">Appliquer</button>
+          </div>
+        </div>
+      </details>
+    </div>
+
+    <div class="filter">
+      <span class="filter__label" id="lbl-accounts">Comptes</span>
+      <details class="dropdown" id="account-dropdown">
+        <summary class="btn" aria-labelledby="lbl-accounts">
+          <span id="account-summary">Tous les comptes</span>
+          <span class="btn__caret" aria-hidden="true"></span>
+        </summary>
+        <div class="dropdown__panel" id="account-panel"></div>
+      </details>
+    </div>
+
+    <!-- Ne concerne que l'onglet Live : une dépense n'est pas rattachable à une
+         action de conversion, ce filtre ne cadre donc que les conversions. -->
+    <div class="filter" id="filter-action" hidden>
+      <span class="filter__label" id="lbl-action">Action de conversion</span>
+      <details class="dropdown">
+        <summary class="btn" aria-labelledby="lbl-action">
+          <span id="action-summary">Toutes</span>
+          <span class="btn__caret" aria-hidden="true"></span>
+        </summary>
+        <div class="dropdown__panel" id="action-panel"></div>
+      </details>
+    </div>
+
+    <div class="filter" data-report-only>
+      <span class="filter__label" id="lbl-device">Appareil</span>
+      <details class="dropdown">
+        <summary class="btn" aria-labelledby="lbl-device">
+          <span id="device-summary">Tous</span>
+          <span class="btn__caret" aria-hidden="true"></span>
+        </summary>
+        <div class="dropdown__panel" id="device-panel"></div>
+      </details>
+    </div>
+
+    <div class="filter" data-report-only>
+      <span class="filter__label" id="lbl-network">Réseau</span>
+      <details class="dropdown">
+        <summary class="btn" aria-labelledby="lbl-network">
+          <span id="network-summary">Tous</span>
+          <span class="btn__caret" aria-hidden="true"></span>
+        </summary>
+        <div class="dropdown__panel" id="network-panel"></div>
+      </details>
+    </div>
+
+    <div class="filter filter--grow" data-report-only>
+      <label class="filter__label" for="campaign-search">Campagne</label>
+      <input type="search" id="campaign-search" class="input" placeholder="Filtrer par nom…"
+             autocomplete="off" spellcheck="false">
+    </div>
+
+    <button type="button" class="btn btn--ghost filter__reset" id="filter-reset">Réinitialiser</button>
+  </div>
+  <p class="filterbar__status" id="filter-status" role="status" aria-live="polite"></p>
+</div>
+
 <!-- ── Onglet Live ────────────────────────────────────────────────────────── -->
 <main id="view-live" hidden>
   <div class="banner banner--error" id="live-error" hidden></div>
@@ -94,74 +176,6 @@
   </div>
 </main>
 
-<!-- Une seule rangée de filtres, au-dessus de tout ce qu'elle cadre. -->
-<div class="filterbar" id="filterbar" role="search" aria-label="Filtres du rapport">
-  <div class="filterbar__inner">
-
-    <div class="filter">
-      <span class="filter__label" id="lbl-range">Période</span>
-      <div class="segmented" role="group" aria-labelledby="lbl-range" id="range-presets"></div>
-      <details class="dropdown dropdown--tight" id="range-custom-wrap">
-        <summary class="btn btn--ghost" title="Période personnalisée">Personnalisée</summary>
-        <div class="dropdown__panel dropdown__panel--form">
-          <label class="field">
-            <span>Du</span>
-            <input type="date" id="range-start">
-          </label>
-          <label class="field">
-            <span>Au</span>
-            <input type="date" id="range-end">
-          </label>
-          <div class="dropdown__footer">
-            <button type="button" class="btn btn--primary" id="range-apply">Appliquer</button>
-          </div>
-        </div>
-      </details>
-    </div>
-
-    <div class="filter">
-      <span class="filter__label" id="lbl-accounts">Comptes</span>
-      <details class="dropdown" id="account-dropdown">
-        <summary class="btn" aria-labelledby="lbl-accounts">
-          <span id="account-summary">Tous les comptes</span>
-          <span class="btn__caret" aria-hidden="true"></span>
-        </summary>
-        <div class="dropdown__panel" id="account-panel"></div>
-      </details>
-    </div>
-
-    <div class="filter">
-      <span class="filter__label" id="lbl-device">Appareil</span>
-      <details class="dropdown">
-        <summary class="btn" aria-labelledby="lbl-device">
-          <span id="device-summary">Tous</span>
-          <span class="btn__caret" aria-hidden="true"></span>
-        </summary>
-        <div class="dropdown__panel" id="device-panel"></div>
-      </details>
-    </div>
-
-    <div class="filter">
-      <span class="filter__label" id="lbl-network">Réseau</span>
-      <details class="dropdown">
-        <summary class="btn" aria-labelledby="lbl-network">
-          <span id="network-summary">Tous</span>
-          <span class="btn__caret" aria-hidden="true"></span>
-        </summary>
-        <div class="dropdown__panel" id="network-panel"></div>
-      </details>
-    </div>
-
-    <div class="filter filter--grow">
-      <label class="filter__label" for="campaign-search">Campagne</label>
-      <input type="search" id="campaign-search" class="input" placeholder="Filtrer par nom…"
-             autocomplete="off" spellcheck="false">
-    </div>
-
-    <button type="button" class="btn btn--ghost filter__reset" id="filter-reset">Réinitialiser</button>
-  </div>
-  <p class="filterbar__status" id="filter-status" role="status" aria-live="polite"></p>
-</div>
 
 <main id="contenu" data-view="report">
 

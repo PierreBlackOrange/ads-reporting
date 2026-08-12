@@ -173,63 +173,80 @@ def main() -> int:
     acts_ref = fetch_day(cfg, token, accounts, ref_day, ACTIONS_QUERY)
     print(f"  {len(acts_today)} + {len(acts_ref)} ligne(s)")
 
+    # Toutes les séries sont ventilées par compte, pour que le filtre de comptes
+    # du rapport s'applique aussi ici. Le navigateur ré-agrège la sélection ;
+    # publier des totaux déjà fondus l'en empêcherait.
+    acc_names = [a["name"] for a in accounts]
+    acc_pos = {n: i for i, n in enumerate(acc_names)}
+    METRICS = ("impr", "clicks", "cost", "conv", "allconv", "value")
+
+    def blank_matrix():
+        return {k: [blank_hours() for _ in acc_names] for k in METRICS}
+
     def aggregate(rows):
-        """→ (totaux horaires, {campagne: {compte, coût horaire, conv horaires}})"""
-        hourly = {k: blank_hours() for k in
-                  ("impr", "clicks", "cost", "conv", "allconv", "value")}
-        camps: dict[str, dict] = {}
+        """→ (séries [compte][heure] par métrique, {campagne: totaux})"""
+        hourly = blank_matrix()
+        camps: dict[tuple, dict] = {}
         for r in rows:
             h = int(r["segments"]["hour"])
+            ai = acc_pos.get(r.get("_account", ""), 0)
             m = r.get("metrics", {})
-            cost = int(m.get("costMicros") or 0) / 1_000_000
-            clicks = F.to_int(m.get("clicks"))
-            impr = F.to_int(m.get("impressions"))
-            conv = F.to_float(m.get("conversions"))
-            allc = F.to_float(m.get("allConversions"))
-            val = F.to_float(m.get("allConversionsValue"))
-
-            hourly["impr"][h] += impr
-            hourly["clicks"][h] += clicks
-            hourly["cost"][h] += cost
-            hourly["conv"][h] += conv
-            hourly["allconv"][h] += allc
-            hourly["value"][h] += val
+            vals = {
+                "impr": F.to_int(m.get("impressions")),
+                "clicks": F.to_int(m.get("clicks")),
+                "cost": int(m.get("costMicros") or 0) / 1_000_000,
+                "conv": F.to_float(m.get("conversions")),
+                "allconv": F.to_float(m.get("allConversions")),
+                "value": F.to_float(m.get("allConversionsValue")),
+            }
+            for k, v in vals.items():
+                hourly[k][ai][h] += v
 
             name = (r.get("campaign") or {}).get("name") or "(sans nom)"
-            c = camps.get(name)
+            key = (name, ai)
+            c = camps.get(key)
             if c is None:
-                c = camps[name] = {"account": r.get("_account", ""),
-                                   "cost": blank_hours(), "allconv": blank_hours()}
-            c["cost"][h] += cost
-            c["allconv"][h] += allc
+                c = camps[key] = {"cost": blank_hours(), "allconv": blank_hours()}
+            c["cost"][h] += vals["cost"]
+            c["allconv"][h] += vals["allconv"]
         return hourly, camps
 
     today_h, today_c = aggregate(rows_today)
     ref_h, ref_c = aggregate(rows_ref)
 
     def aggregate_actions(rows):
-        acts: dict[str, list] = {}
+        """(action, compte) → conversions horaires."""
+        acts: dict[tuple, list] = {}
         for r in rows:
             h = int(r["segments"]["hour"])
+            ai = acc_pos.get(r.get("_account", ""), 0)
             name = r["segments"].get("conversionActionName") or "(sans nom)"
             m = r.get("metrics", {})
-            a = acts.get(name)
+            key = (name, ai)
+            a = acts.get(key)
             if a is None:
-                a = acts[name] = [blank_hours(), 0.0]
+                a = acts[key] = [blank_hours(), blank_hours()]
             a[0][h] += F.to_float(m.get("allConversions"))
-            a[1] += F.to_float(m.get("allConversionsValue"))
+            a[1][h] += F.to_float(m.get("allConversionsValue"))
         return acts
 
     at, ar = aggregate_actions(acts_today), aggregate_actions(acts_ref)
 
+    def totals_by_hour(matrix, key):
+        """Somme tous comptes d'une métrique, heure par heure."""
+        return [sum(matrix[key][ai][h] for ai in range(len(acc_names)))
+                for h in range(24)]
+
     # ── Frontière de consolidation ───────────────────────────────────────────
-    # On remonte depuis l'heure en cours tant que le volume du jour reste très
-    # en deçà de la même heure de référence. La première heure qui tient la
-    # comparaison marque la fin de la zone incertaine.
+    # Calculée sur l'ensemble des comptes, volontairement. Le retard de remontée
+    # est une propriété de la plateforme, pas d'un compte ; la déduire d'un
+    # compte à faible volume donnerait une frontière instable.
+    all_today = totals_by_hour(today_h, "allconv")
+    all_ref = totals_by_hour(ref_h, "allconv")
     settled_through = -1
     for h in range(current_hour, -1, -1):
-        ref = ref_h["allconv"][h]
-        cur = today_h["allconv"][h]
+        ref = all_ref[h]
+        cur = all_today[h]
         if ref < MIN_REF_CONV:
             continue          # référence trop faible pour conclure
         if cur >= ref * SETTLED_RATIO:
@@ -239,57 +256,46 @@ def main() -> int:
             break
     lag_hours = max(0, current_hour - settled_through) if settled_through >= 0 else None
 
-    # ── Alerte ───────────────────────────────────────────────────────────────
-    # Évaluée uniquement sur la dernière heure consolidée : c'est la plus
-    # récente sur laquelle un zéro veut dire quelque chose.
-    alert = None
-    if settled_through >= 0:
-        h = settled_through
-        cur = today_h["allconv"][h]
-        ref = ref_h["allconv"][h]
-        if cur <= 0 and ref >= MIN_REF_CONV:
-            alert = {"level": "alerte", "hour": h, "current": 0.0, "reference": round(ref, 1)}
-        elif ref >= MIN_REF_CONV and cur < ref * 0.5:
-            alert = {"level": "vigilance", "hour": h,
-                     "current": round(cur, 1), "reference": round(ref, 1)}
+    # L'alerte n'est PAS calculée ici : elle doit suivre les filtres de compte
+    # et d'action de conversion, que seul le navigateur connaît. Seule la
+    # frontière de consolidation, globale par nature, est publiée.
 
-    # ── Comparaison à heure égale ────────────────────────────────────────────
-    # Cumul jusqu'à l'heure en cours des deux côtés : comparer une journée
-    # partielle à une journée complète n'aurait aucun sens.
     def htd(series):
+        """Cumul jusqu'à l'heure en cours — comparer un jour partiel à un jour
+        complet n'aurait aucun sens."""
         return round(sum(series[: current_hour + 1]), 2)
-
-    totals = {
-        k: {"today": htd(today_h[k]), "ref": htd(ref_h[k])}
-        for k in ("impr", "clicks", "cost", "conv", "allconv", "value")
-    }
 
     # Campagnes : les plus gros écarts de dépense, en absolu.
     camp_rows = []
-    for name in set(today_c) | set(ref_c):
-        tc = today_c.get(name, {"cost": blank_hours(), "allconv": blank_hours(), "account": ""})
-        rc = ref_c.get(name, {"cost": blank_hours(), "allconv": blank_hours(), "account": ""})
+    for key in set(today_c) | set(ref_c):
+        name, ai = key
+        tc = today_c.get(key, {"cost": blank_hours(), "allconv": blank_hours()})
+        rc = ref_c.get(key, {"cost": blank_hours(), "allconv": blank_hours()})
         ct, cr = htd(tc["cost"]), htd(rc["cost"])
         vt, vr = htd(tc["allconv"]), htd(rc["allconv"])
         if ct <= 0 and cr <= 0:
             continue
-        camp_rows.append([
-            name, tc["account"] or rc["account"],
-            ct, cr, round(vt, 2), round(vr, 2),
-        ])
+        camp_rows.append([name, ai, ct, cr, round(vt, 2), round(vr, 2)])
     camp_rows.sort(key=lambda r: -abs(r[2] - r[3]))
-    camp_rows = camp_rows[:40]
+    camp_rows = camp_rows[:60]
 
+    # Actions : séries horaires complètes, jour et référence, par compte. Le
+    # navigateur en tire aussi bien le cumul que l'évolution heure par heure.
     action_rows = []
-    for name in set(at) | set(ar):
-        t_h = at.get(name, [blank_hours(), 0.0])
-        r_h = ar.get(name, [blank_hours(), 0.0])
-        tt, rr = htd(t_h[0]), htd(r_h[0])
-        if tt <= 0 and rr <= 0:
+    for key in set(at) | set(ar):
+        name, ai = key
+        t_h = at.get(key, [blank_hours(), blank_hours()])
+        r_h = ar.get(key, [blank_hours(), blank_hours()])
+        if htd(t_h[0]) <= 0 and htd(r_h[0]) <= 0:
             continue
-        action_rows.append([name, round(tt, 2), round(rr, 2),
-                            [round(v, 2) for v in t_h[0]]])
-    action_rows.sort(key=lambda r: -r[1])
+        action_rows.append([
+            name, ai,
+            [round(v, 2) for v in t_h[0]],
+            [round(v, 2) for v in r_h[0]],
+            [round(v, 2) for v in t_h[1]],
+            [round(v, 2) for v in r_h[1]],
+        ])
+    action_rows.sort(key=lambda r: -sum(r[2][: current_hour + 1]))
 
     dataset = {
         "meta": {
@@ -303,15 +309,15 @@ def main() -> int:
             "settled_through": settled_through,
             "lag_hours": lag_hours,
             "currency": cfg.get("report_currency") or "EUR",
-            "accounts": [a["name"] for a in accounts],
+            "min_ref_conv": MIN_REF_CONV,
         },
+        "accounts": acc_names,
         "hours": list(range(24)),
-        "today": {k: [round(v, 2) for v in today_h[k]] for k in today_h},
-        "reference": {k: [round(v, 2) for v in ref_h[k]] for k in ref_h},
-        "totals": totals,
+        # [métrique][compte][heure]
+        "today": {k: [[round(v, 2) for v in row] for row in today_h[k]] for k in METRICS},
+        "reference": {k: [[round(v, 2) for v in row] for row in ref_h[k]] for k in METRICS},
         "campaigns": camp_rows,
         "actions": action_rows,
-        "alert": alert,
     }
 
     out = Path(args.out)
@@ -319,20 +325,20 @@ def main() -> int:
     out.write_text(json.dumps(dataset, ensure_ascii=False, separators=(",", ":")),
                    encoding="utf-8")
 
-    cur = totals["cost"]["today"]
-    ref = totals["cost"]["ref"]
+    cur = htd(totals_by_hour(today_h, "cost"))
+    ref = htd(totals_by_hour(ref_h, "cost"))
     delta = ((cur - ref) / ref * 100) if ref else 0.0
     print(f"\nÉcrit : {out}  ({out.stat().st_size / 1024:,.0f} Ko)")
     print(f"  dépense à {current_hour}h : {cur:,.0f} contre {ref:,.0f} il y a 7 jours "
           f"({delta:+.1f} %)")
-    print(f"  conversions (all) : {totals['allconv']['today']:,.1f} "
-          f"contre {totals['allconv']['ref']:,.1f}")
+    print(f"  conversions (all) : {htd(all_today):,.1f} contre {htd(all_ref):,.1f}")
+    print(f"  {len(action_rows)} ligne(s) action×compte · {len(camp_rows)} campagne(s)")
     if settled_through >= 0:
         print(f"  consolidé jusqu'à {settled_through}h — les {lag_hours} dernière(s) "
               f"heure(s) sont encore en cours de remontée")
     else:
         print("  aucune heure consolidée : référence trop faible pour conclure")
-    print(f"  alerte : {alert['level'] if alert else 'aucune'}")
+    print("  alerte : calculée côté navigateur, pour suivre les filtres")
     return 0
 
 
