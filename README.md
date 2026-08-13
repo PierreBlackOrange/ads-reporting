@@ -389,6 +389,21 @@ En vue hebdomadaire ou mensuelle, les périodes tronquées par les bornes du fil
 sont signalées sous le titre — sans cela, une semaine d'un seul jour se lirait
 comme un effondrement.
 
+### Efficacité des campagnes
+
+Coût en abscisse, **ROAS** en ordonnée, un point par campagne, et un repère au
+seuil de rentabilité.
+
+L'abscisse est **logarithmique** : les budgets vont ici de quelques euros à
+plusieurs dizaines de milliers, et en linéaire la centaine de campagnes qu'on
+cherche à comparer s'entassait contre l'axe pendant que trois gros points
+occupaient tout l'espace. Le log ne cache rien et ne tronque aucune échelle, il
+redistribue seulement la place.
+
+Les campagnes dont le compte ne remonte aucune valeur de conversion sont
+écartées, comme dans la marge : leur ROAS vaudrait zéro, ce qui se lirait comme
+« aucun retour » au lieu de « non mesuré ». Le sous-titre chiffre l'exclusion.
+
 ### La marge par campagne
 
 **Marge = valeur de conversion − coût**, sur la période filtrée. Le **taux de

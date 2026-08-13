@@ -455,6 +455,26 @@ function niceTicks(min, max, count = 5) {
   return { ticks, min: lo, max: hi };
 }
 
+/**
+ * Graduations logarithmiques : une par puissance de dix couvrant les valeurs.
+ *
+ * Les bornes sont arrondies à la décade, si bien que l'axe se lit 10, 100,
+ * 1 000… plutôt que sur des puissances fractionnaires. Les valeurs nulles ou
+ * négatives n'existent pas sur cette échelle : l'appelant filtre en amont, et
+ * la borne basse ne descend jamais sous 1 pour éviter une décade vide.
+ */
+function logTicks(values) {
+  const pos = values.filter((v) => v > 0);
+  if (!pos.length) return { ticks: [1, 10], min: 1, max: 10 };
+  const lo = Math.pow(10, Math.floor(Math.log10(Math.min(...pos))));
+  const hi = Math.pow(10, Math.ceil(Math.log10(Math.max(...pos))));
+  const min = Math.max(1, lo);
+  const max = Math.max(hi, min * 10);
+  const ticks = [];
+  for (let v = min; v <= max * (1 + 1e-9); v *= 10) ticks.push(v);
+  return { ticks, min, max };
+}
+
 /** Chemin de barre à extrémité arrondie 4px, carrée sur la ligne de base. */
 function barPath(x, y, w, h, r, dir) {
   const rr = Math.max(0, Math.min(r, dir === 'h' ? w : h, (dir === 'h' ? h : w) / 2));
@@ -1176,7 +1196,15 @@ function renderScatter(container, cfg) {
   const W = measureWidth(container);
   const plotH = cfg.height || 288;
 
-  const xs = niceTicks(0, Math.max(...points.map((p) => p.x), 1), 5);
+  // Échelle logarithmique optionnelle en abscisse. Les budgets publicitaires
+  // s'étalent sur plusieurs ordres de grandeur : une échelle linéaire écrase
+  // alors la quasi-totalité des campagnes contre l'axe, et le nuage ne dit plus
+  // rien de celles qu'on cherche justement à comparer. Le log ne cache aucune
+  // donnée et ne tronque aucune échelle, il redistribue seulement l'espace.
+  const xLog = cfg.xScale === 'log';
+  const xs = xLog
+    ? logTicks(points.map((p) => p.x))
+    : niceTicks(0, Math.max(...points.map((p) => p.x), 1), 5);
   const ys = niceTicks(0, Math.max(...points.map((p) => p.y), 1), 5);
 
   // Les graduations sont des nombres ronds : un axe de conversions affiche
@@ -1197,7 +1225,10 @@ function renderScatter(container, cfg) {
     role: 'img', 'aria-label': cfg.ariaLabel || 'Nuage de points',
   }, wrap);
 
-  const X = (v) => padL + ((v - xs.min) / (xs.max - xs.min || 1)) * plotW;
+  const lgSpan = xLog ? (Math.log10(xs.max) - Math.log10(xs.min) || 1) : 1;
+  const X = xLog
+    ? (v) => padL + ((Math.log10(Math.max(v, xs.min)) - Math.log10(xs.min)) / lgSpan) * plotW
+    : (v) => padL + ((v - xs.min) / (xs.max - xs.min || 1)) * plotW;
   const Y = (v) => padT + plotH - ((v - ys.min) / (ys.max - ys.min || 1)) * plotH;
 
   for (const t of ys.ticks) {
@@ -1219,12 +1250,10 @@ function renderScatter(container, cfg) {
 
   // Seuil optionnel : trait plein teinté, étiqueté — un lecteur ne devine pas
   // où commence la zone problématique.
-  if (cfg.threshold && cfg.threshold.y !== undefined) {
-    const ty = Y(cfg.threshold.y);
-    el('line', { class: 'threshold-line', x1: padL, x2: padL + plotW, y1: ty, y2: ty }, svg);
-    textNode('text', {
-      class: 'threshold-label', x: padL + plotW, y: ty - 5, 'text-anchor': 'end',
-    }, cfg.threshold.label || '', svg);
+  const thresholdY = cfg.threshold && cfg.threshold.y !== undefined
+    ? Y(cfg.threshold.y) : null;
+  if (thresholdY !== null) {
+    el('line', { class: 'threshold-line', x1: padL, x2: padL + plotW, y1: thresholdY, y2: thresholdY }, svg);
   }
 
   // Anneau de 2px en couleur de surface : les points restent lisibles en chevauchement.
@@ -1232,6 +1261,15 @@ function renderScatter(container, cfg) {
     cx: X(p.x), cy: Y(p.y), r: p.r || 5, fill: p.color || color,
     stroke: cssVar('--surface-1'), 'stroke-width': 2,
   }, svg));
+
+  // Le trait du seuil passe sous les points — c'est un fond de scène — mais son
+  // étiquette se pose au-dessus, halo compris : un point tombé pile dessus la
+  // rendrait sinon illisible, et un repère qu'on ne peut pas lire n'en est pas un.
+  if (thresholdY !== null) {
+    textNode('text', {
+      class: 'threshold-label', x: padL + plotW, y: thresholdY - 6, 'text-anchor': 'end',
+    }, cfg.threshold.label || '', svg);
+  }
 
   // Couche du point le plus proche : le pointeur n'a qu'à être le plus près,
   // jamais pile au centre d'un disque de 10px.
@@ -1710,18 +1748,45 @@ function campaignRows(sel) {
 }
 
 function renderEfficiency(rows) {
+  // Un ROAS n'existe pas là où la valeur de conversion n'est pas suivie : il
+  // vaudrait zéro, ce qui se lirait comme « aucun retour » au lieu de « non
+  // mesuré ». Le partage se fait au compte, comme pour la marge — dans un
+  // compte qui suit la valeur, une campagne à zéro valeur est un vrai zéro.
+  const spending = rows.filter((r) => r.cost > 0);
+  const { tracked, untracked } = splitByValueTracking(spending);
+
+  const bits = [`Coût investi face au ROAS obtenu. Chaque point est une campagne.`];
+  if (untracked.length) {
+    const uCost = untracked.reduce((s, r) => s + r.cost, 0);
+    bits.push(
+      `${untracked.length} campagne(s) écartée(s), ${compactly(fmtMoney, uCost)} : leur `
+      + `compte ne remonte aucune valeur de conversion, leur ROAS serait un zéro `
+      + `de mesure et non de résultat.`
+    );
+  }
+  els.effSub.textContent = bits.join(' ');
+
+  if (!tracked.length) {
+    emptyState(els.effBody, untracked.length
+      ? `Aucun compte de cette sélection ne remonte de valeur de conversion : `
+        + `le ROAS n'y est pas mesurable.`
+      : 'Aucune dépense sur cette sélection.');
+    return;
+  }
+
   if (S.views.eff === 'table') {
     renderTable(els.effBody, {
       scroll: true,
-      caption: 'Coût et conversions par campagne',
+      caption: 'Coût et ROAS par campagne',
       cols: [
         { key: 'name', label: 'Campagne', text: true },
         { key: 'cost', label: 'Coût', fmt: (v) => fmtMoney(v) },
+        { key: 'convValue', label: 'Valeur conv.', fmt: (v) => fmtMoney(v) },
+        { key: 'roas', label: 'ROAS', fmt: fmtRatio },
         { key: 'conversions', label: 'Conv.', fmt: fmtNum1 },
         { key: 'cpa', label: 'CPA', fmt: (v) => fmtMoney(v) },
-        { key: 'roas', label: 'ROAS', fmt: fmtRatio },
       ],
-      rows: [...rows].sort((a, b) => b.cost - a.cost)
+      rows: [...tracked].sort((a, b) => b.cost - a.cost)
         .map((r) => ({ ...r, _sub: r.account, _swatch: seriesColor(entitySlot(r.accountIdx)) })),
     });
     return;
@@ -1729,19 +1794,27 @@ function renderEfficiency(rows) {
 
   // Série unique → une seule teinte. La position porte déjà toute l'information.
   renderScatter(els.effBody, {
-    points: rows.map((r) => ({
-      x: r.cost, y: r.conversions, name: r.name, sub: `${r.account} · ${r.channel}`,
+    points: tracked.map((r) => ({
+      x: r.cost, y: r.roas, name: r.name, sub: `${r.account} · ${r.channel}`,
       rows: [
+        { name: 'ROAS', value: fmtRatio(r.roas) },
         { name: 'Coût', value: fmtMoney(r.cost) },
+        { name: 'Valeur de conv.', value: fmtMoney(r.convValue) },
         { name: 'Conversions', value: fmtNum1(r.conversions) },
         { name: 'CPA', value: fmtMoney(r.cpa) },
-        { name: 'ROAS', value: fmtRatio(r.roas) },
       ],
     })),
-    xFmt: fmtMoney, yFmt: fmtNum1, yAxisFmt: fmtInt,
-    xLabel: `Coût (${CURRENCY})`, yLabel: 'Conversions',
+    xFmt: fmtMoney, yFmt: fmtRatio,
+    // Les dépenses vont ici de quelques dizaines à plusieurs dizaines de
+    // milliers : en linéaire, la centaine de campagnes qu'on veut comparer
+    // s'entasse contre l'axe et le nuage ne montre plus que trois gros points.
+    xScale: 'log',
+    xLabel: `Coût (${CURRENCY}, échelle logarithmique)`, yLabel: 'ROAS',
+    // Sur un ROAS, 1 sépare ce qui rapporte de ce qui coûte : sans ce trait, le
+    // lecteur devrait situer le seuil de tête pour chaque point.
+    threshold: { y: 1, label: 'seuil de rentabilité' },
     color: seriesColor(1), height: 250,
-    ariaLabel: 'Coût face aux conversions, par campagne',
+    ariaLabel: 'Coût face au ROAS, par campagne',
   });
 }
 
@@ -5238,7 +5311,7 @@ function cacheEls() {
     bannerError: 'banner-error',
     kpiGrid: 'kpi-grid', kpiCompare: 'kpi-compare',
     tsBody: 'ts-body', tsSub: 'ts-sub', tsMetric: 'ts-metric', tsGrain: 'ts-grain', tsMode: 'ts-mode',
-    roiBody: 'roi-body', roiSub: 'roi-sub', effBody: 'eff-body',
+    roiBody: 'roi-body', roiSub: 'roi-sub', effBody: 'eff-body', effSub: 'eff-sub',
     topBody: 'top-body', topSub: 'top-sub', topMetric: 'top-metric',
     mixBody: 'mix-body', mixSub: 'mix-sub', mixDim: 'mix-dim',
     marginBody: 'margin-body', marginSub: 'margin-sub',

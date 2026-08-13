@@ -639,7 +639,16 @@ main {
 /* Ligne de seuil : trait plein comme les autres, mais teinté — le tiret est
    réservé à rien du tout, il ajoute du bruit et se lit comme une projection. */
 .threshold-line { stroke: var(--status-warning); stroke-width: 1.5; }
-.threshold-label { font-size: 10px; fill: var(--text-muted); }
+/* Halo de la couleur de surface : l'étiquette est tracée avant les marques et
+   se retrouve sous elles ; sans ce liseré, un point posé sur le seuil la rend
+   illisible. */
+.threshold-label {
+  font-size: 10px;
+  fill: var(--text-muted);
+  stroke: var(--surface-1);
+  stroke-width: 3px;
+  paint-order: stroke fill;
+}
 
 /* Axe de symétrie d'un diagramme divergent. */
 .zero-line { stroke: var(--baseline); stroke-width: 1; }
