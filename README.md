@@ -169,6 +169,58 @@ le publier délibérément : `git add -f data/aimax.json`.
 
 ---
 
+## Onglet Sexes
+
+Un troisième onglet, `#vue=gender`, alimenté par `data/gender.json`
+(`python scripts/fetch_gender.py`, 180 jours par défaut). Il se charge **à
+l'ouverture de l'onglet** et non au démarrage : 2,1 Mo (507 Ko compressés) sur un
+fichier que la plupart des visites n'ouvriront pas.
+
+### D'où vient la donnée
+
+De `gender_view`, au grain critère démographique, agrégée en
+(jour × campagne × sexe × appareil). Vérifié avant d'écrire le script : sur les
+trois comptes les plus dépensiers, la somme des coûts de `gender_view` **égale à
+100 %** le coût total des campagnes. Il n'y a donc aucun angle mort de couverture
+à signaler. L'autre voie possible, `segments.adjusted_gender`, est refusée par
+l'API dès qu'on demande des métriques
+(`PROHIBITED_SEGMENT_WITH_METRIC_IN_SELECT_OR_WHERE_CLAUSE`).
+
+Fichier séparé de `data.json` plutôt que dimension supplémentaire : le sexe
+triplerait le nombre de lignes d'un fichier déjà chargé d'office.
+
+### « Inconnu » n'est pas une troisième catégorie de personnes
+
+C'est l'aveu que Google n'a pas su trancher. Sur ce MCC cela pèse **40 % du
+coût** — davantage que « Femmes » d'un facteur dix. Trois conséquences pour la
+lecture :
+
+- La catégorie reste **affichée en clair**, jamais rangée dans un « autres » qui
+  la ferait passer pour marginale. Un bandeau le rappelle en tête d'onglet.
+- Un CPA « Hommes » ne se compare donc pas à un CPA global : 40 % de la dépense
+  est ailleurs. Réduire ce bloc passe par le ciblage démographique des
+  campagnes, pas par ce rapport.
+- Une campagne à 85 % d'« Inconnu » ne dit rien de son audience réelle. Elle dit
+  que la mesure démographique n'y fonctionne pas.
+
+L'ordre d'affichage — Hommes, Femmes, Inconnu — et les couleurs sont **figés**,
+indépendamment du volume. Une catégorie qui change de place ou de teinte d'un
+export à l'autre rendrait deux captures incomparables.
+
+### Base 100
+
+Trois cartes proposent le basculement `Volume` / `Base 100` : par compte, par
+appareil, et sur l'évolution. En base 100 chaque colonne est ramenée à 100 % et
+la dépense absolue reste affichée à droite de la barre — sans elle, un compte à
+2 k€ et un à 180 k€ auraient exactement la même allure.
+
+Le même basculement a été ajouté à la carte **Répartition du coût par compte** du
+rapport, qui offre désormais `Appareil · Base 100 · Réseau`. « Réseau » a été
+conservé, pas remplacé : la répartition Search / Display / Partenaires répond à
+une autre question que le mix d'appareils.
+
+---
+
 ## Le bouton « Actualiser » du Live — ce qu'il fait, ce qu'il ne peut pas faire
 
 Il **relit `data/live.json`** sans recharger la page, et la vue se redessine. Un
@@ -384,8 +436,9 @@ https://VOTRE-COMPTE.github.io/VOTRE-REPO/
 ### 3.3 Mettre à jour les données
 
 ```bash
-python scripts/fetch_ads_data.py
-git add data/data.json
+python scripts/fetch_ads_data.py     # rapport      → data/data.json
+python scripts/fetch_gender.py       # onglet Sexes → data/gender.json
+git add data/data.json data/gender.json
 git commit -m "Mise à jour des données"
 git push
 ```
@@ -394,8 +447,10 @@ Le site se redéploie automatiquement.
 
 ### 3.4 Rafraîchissement automatique (optionnel)
 
-`.github/workflows/refresh-data.yml` récupère les données chaque jour et les
-commite. Pour l'activer, ajoutez vos credentials dans **Settings → Secrets and
+`.github/workflows/refresh-data.yml` récupère `data.json`, `aimax.json` et
+`gender.json` chaque jour et les commite. Les deux derniers sont en
+`continue-on-error` : leur onglet se signale absent plutôt que de priver le
+rapport principal de sa mise à jour. Pour l'activer, ajoutez vos credentials dans **Settings → Secrets and
 variables → Actions** :
 
 `GOOGLE_ADS_DEVELOPER_TOKEN`, `GOOGLE_ADS_CLIENT_ID`,
@@ -418,6 +473,10 @@ recalculent sur la même sélection.
 
 Dans le menu *Comptes*, un premier clic **isole** le compte cliqué ; les clics
 suivants ajoutent ou retirent. Tout désélectionner revient à « tous ».
+
+Trois onglets en haut à droite — **Rapport**, **Live**, **Sexes** — partagent
+cette rangée. Les filtres période et comptes s'appliquent aux trois ; appareil,
+réseau et nom de campagne ne concernent que le rapport.
 
 **Liens partageables** — l'état des filtres est écrit dans l'URL. Copiez la barre
 d'adresse et le destinataire ouvre exactement la même vue :

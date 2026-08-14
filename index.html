@@ -205,6 +205,128 @@
 </main>
 
 
+<!-- ── Onglet Sexes ───────────────────────────────────────────────────────── -->
+<main id="view-gender" hidden>
+  <div class="banner banner--error" id="gender-error" hidden></div>
+  <div class="banner banner--warn" id="gender-note" hidden></div>
+
+  <!-- Chargé à la demande : ce jeu de données est distinct de data.json et
+       n'est pas nécessaire au reste du rapport. -->
+  <div class="card card--wide" id="gender-loader">
+    <div class="card__body">
+      <p class="loader">
+        <button type="button" class="btn btn--primary" id="gender-load">
+          Charger les données par sexe
+        </button>
+        <span class="loader__note">
+          Jeu de données distinct (<code>data/gender.json</code>), chargé
+          séparément pour ne pas alourdir le rapport principal.
+        </span>
+      </p>
+    </div>
+  </div>
+
+  <div id="gender-content" hidden>
+    <section class="section" aria-labelledby="h-gender-kpi">
+      <div class="section__head">
+        <h2 id="h-gender-kpi">Performances par sexe</h2>
+        <p class="section__sub" id="gender-meta"></p>
+      </div>
+      <div class="kpi-grid" id="gender-kpi"></div>
+    </section>
+
+    <section class="section" aria-labelledby="h-gender-time">
+      <article class="card card--wide">
+        <div class="card__head">
+          <div>
+            <h3 class="card__title" id="h-gender-time">Évolution par sexe</h3>
+            <p class="card__sub" id="gender-time-sub"></p>
+          </div>
+          <div class="card__tools">
+            <label class="select-wrap">
+              <span class="sr-only">Mesure</span>
+              <select id="gender-metric" class="select"></select>
+            </label>
+            <div class="segmented segmented--sm" role="group" aria-label="Granularité"
+                 id="gender-grain"></div>
+            <div class="segmented segmented--sm" role="group" aria-label="Échelle"
+                 id="gender-scale"></div>
+            <div class="segmented segmented--sm viewtoggle" role="group"
+                 aria-label="Type d'affichage" data-view-for="gendertime"></div>
+          </div>
+        </div>
+        <div class="card__body" id="gender-time-body"></div>
+      </article>
+    </section>
+
+    <div class="grid-2">
+      <article class="card">
+        <div class="card__head">
+          <div>
+            <h3 class="card__title" id="h-gender-acc">Répartition par compte</h3>
+            <p class="card__sub" id="gender-acc-sub"></p>
+          </div>
+          <div class="card__tools">
+            <div class="segmented segmented--sm" role="group" aria-label="Échelle"
+                 id="gender-acc-scale"></div>
+            <div class="segmented segmented--sm viewtoggle" role="group"
+                 aria-label="Type d'affichage" data-view-for="genderacc"></div>
+          </div>
+        </div>
+        <div class="card__body" id="gender-acc-body"></div>
+      </article>
+
+      <article class="card">
+        <div class="card__head">
+          <div>
+            <h3 class="card__title" id="h-gender-eff">Efficacité par sexe</h3>
+            <p class="card__sub" id="gender-eff-sub"></p>
+          </div>
+          <div class="card__tools">
+            <label class="select-wrap">
+              <span class="sr-only">Indicateur</span>
+              <select id="gender-eff-metric" class="select"></select>
+            </label>
+            <div class="segmented segmented--sm viewtoggle" role="group"
+                 aria-label="Type d'affichage" data-view-for="gendereff"></div>
+          </div>
+        </div>
+        <div class="card__body" id="gender-eff-body"></div>
+      </article>
+    </div>
+
+    <section class="section" style="margin-top:16px" aria-labelledby="h-gender-dev">
+      <article class="card card--wide">
+        <div class="card__head">
+          <div>
+            <h3 class="card__title" id="h-gender-dev">Sexe par appareil</h3>
+            <p class="card__sub" id="gender-dev-sub"></p>
+          </div>
+          <div class="card__tools">
+            <div class="segmented segmented--sm" role="group" aria-label="Échelle"
+                 id="gender-dev-scale"></div>
+            <div class="segmented segmented--sm viewtoggle" role="group"
+                 aria-label="Type d'affichage" data-view-for="genderdev"></div>
+          </div>
+        </div>
+        <div class="card__body" id="gender-dev-body"></div>
+      </article>
+    </section>
+
+    <section class="section" aria-labelledby="h-gender-camp">
+      <article class="card card--wide">
+        <div class="card__head">
+          <div>
+            <h3 class="card__title" id="h-gender-camp">Détail par campagne</h3>
+            <p class="card__sub" id="gender-camp-sub"></p>
+          </div>
+        </div>
+        <div class="card__body" id="gender-camp-body"></div>
+      </article>
+    </section>
+  </div>
+</main>
+
 <main id="contenu" data-view="report">
 
   <div class="banner banner--warn" id="banner-demo" hidden>

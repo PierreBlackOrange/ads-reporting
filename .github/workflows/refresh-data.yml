@@ -77,15 +77,30 @@ jobs:
           GOOGLE_ADS_LOGIN_CUSTOMER_ID: ${{ secrets.GOOGLE_ADS_LOGIN_CUSTOMER_ID }}
         run: python scripts/fetch_aimax.py --days 90 --max-terms 4000
 
+      # Même fenêtre que le rapport principal pour que les deux onglets parlent
+      # de la même période. Même clause « continue-on-error » : l'onglet Sexes se
+      # signale absent plutôt que de faire échouer le rafraîchissement.
+      - name: Récupérer les performances par sexe
+        if: steps.check.outputs.ready == 'true'
+        continue-on-error: true
+        env:
+          GOOGLE_ADS_DEVELOPER_TOKEN:   ${{ secrets.GOOGLE_ADS_DEVELOPER_TOKEN }}
+          GOOGLE_ADS_CLIENT_ID:         ${{ secrets.GOOGLE_ADS_CLIENT_ID }}
+          GOOGLE_ADS_CLIENT_SECRET:     ${{ secrets.GOOGLE_ADS_CLIENT_SECRET }}
+          GOOGLE_ADS_REFRESH_TOKEN:     ${{ secrets.GOOGLE_ADS_REFRESH_TOKEN }}
+          GOOGLE_ADS_LOGIN_CUSTOMER_ID: ${{ secrets.GOOGLE_ADS_LOGIN_CUSTOMER_ID }}
+        run: python scripts/fetch_gender.py --days "${{ github.event.inputs.days || '180' }}"
+
       - name: Commiter si les données ont changé
         if: steps.check.outputs.ready == 'true'
         run: |
-          if git diff --quiet -- data/data.json data/aimax.json; then
+          FILES="data/data.json data/aimax.json data/gender.json"
+          if git diff --quiet -- $FILES; then
             echo "Aucun changement."
             exit 0
           fi
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add data/data.json data/aimax.json
+          git add $FILES
           git commit -m "Mise à jour automatique des données Google Ads"
           git push

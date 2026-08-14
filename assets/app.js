@@ -196,6 +196,16 @@ const S = {
   topMetric: 'cost',
   mixDim: 'device',
   mixHidden: new Set(),
+  gender: null,
+  genderState: 'idle',   // idle | loading | ready | error
+  genderMetric: 'cost',
+  genderGrain: 'week',
+  genderScale: 'volume',
+  genderAccScale: 'share',
+  genderDevScale: 'share',
+  genderEffMetric: 'roas',
+  autoLoadGender: false,
+
   aimax: null,
   aimaxState: 'idle',    // idle | loading | ready | error
   aimaxMetric: 'cost',
@@ -2716,9 +2726,14 @@ async function loadAimax() {
 function renderMix(sel) {
   const d = S.data;
   const dim = S.mixDim;
-  const dimValues = dim === 'device' ? d.devices : dim === 'network' ? d.networks : null;
-  const dimIdx = dim === 'device' ? F.DEV : F.NET;
-  const labels = dim === 'device' ? DEVICE_LABELS : NETWORK_LABELS;
+  // « device100 » n'est pas une dimension de plus : c'est la ventilation par
+  // appareil, lue en composition plutôt qu'en volume.
+  const isDevice = dim === 'device' || dim === 'device100';
+  const share = dim === 'device100';
+  const dimValues = isDevice ? d.devices : d.networks;
+  const dimIdx = isDevice ? F.DEV : F.NET;
+  const labels = isDevice ? DEVICE_LABELS : NETWORK_LABELS;
+  const dimName = isDevice ? 'appareil' : 'réseau';
 
   // 3 créneaux au plus sur ce type de découpage : c'est la limite validée
   // pour les comparaisons toutes-paires. Au-delà, la queue est repliée.
@@ -2768,26 +2783,56 @@ function renderMix(sel) {
     .filter((s) => !S.mixHidden.has(s.key) && allRows.some((r) => (r.values[s.key] || 0) > 0))
     .map((s) => ({ ...s, color: seriesColor(s.slot) }));
 
-  els.mixSub.textContent = `Coût par compte, ventilé par ${dim === 'device' ? 'appareil' : 'réseau'}`
-    + (allRows.length > MAX_ROWS ? ` — ${MAX_ROWS} premiers sur ${allRows.length}` : '');
+  els.mixSub.textContent = share
+    ? `Composition du coût par appareil, chaque compte ramené à 100 % — `
+      + `les volumes ne sont plus comparables entre lignes, les compositions le sont`
+    : `Coût par compte, ventilé par ${dimName}`;
+  if (allRows.length > MAX_ROWS) {
+    els.mixSub.textContent += ` · ${MAX_ROWS} premiers sur ${allRows.length}`;
+  }
 
   if (S.views.mix === 'table') {
+    // Le tableau suit l'échelle du graphique : en base 100 il donne les parts,
+    // et garde la dépense en dernière colonne — sans elle, on ne saurait pas si
+    // une composition à 90 % mobile porte 200 EUR ou 200 000.
     const cols = [{ key: 'label', label: 'Compte', text: true }];
-    for (const s of series) cols.push({ key: s.key, label: s.name, fmt: (v) => fmtMoney(v || 0) });
-    cols.push({ key: 'total', label: 'Total', fmt: (v) => fmtMoney(v) });
+    for (const s of series) {
+      cols.push({
+        key: s.key,
+        label: s.name,
+        fmt: share ? ((v) => fmtPct(v || 0)) : ((v) => fmtMoney(v || 0)),
+      });
+    }
+    cols.push({ key: 'total', label: share ? 'Dépense' : 'Total', fmt: (v) => fmtMoney(v) });
+
     const foot = { label: 'Total', total: allRows.reduce((a, r) => a + r.total, 0) };
-    for (const s of series) foot[s.key] = allRows.reduce((a, r) => a + (r.values[s.key] || 0), 0);
+    for (const s of series) {
+      const sum = allRows.reduce((a, r) => a + (r.values[s.key] || 0), 0);
+      foot[s.key] = share ? (foot.total ? sum / foot.total : 0) : sum;
+    }
+
     renderTable(els.mixBody, {
       cols, foot, scroll: true,
-      caption: `Coût par compte et par ${dim === 'device' ? 'appareil' : 'réseau'}`,
-      rows: allRows.map((r) => ({ label: r.label, total: r.total, ...r.values })),
+      caption: share
+        ? 'Composition du coût par compte et par appareil, en part'
+        : `Coût par compte et par ${dimName}`,
+      rows: allRows.map((r) => {
+        const out = { label: r.label, total: r.total };
+        for (const s of series) {
+          const v = r.values[s.key] || 0;
+          out[s.key] = share ? (r.total ? v / r.total : 0) : v;
+        }
+        return out;
+      }),
     });
     return;
   }
 
   renderStackedBars(els.mixBody, {
-    rows, series, fmt: fmtMoney,
-    ariaLabel: `Coût par compte ventilé par ${dim === 'device' ? 'appareil' : 'réseau'}`,
+    rows, series, fmt: fmtMoney, normalize: share,
+    ariaLabel: share
+      ? 'Composition du coût par appareil, chaque compte ramené à 100 %'
+      : `Coût par compte ventilé par ${dimName}`,
     legendToggle: {
       hidden: S.mixHidden,
       toggles: (key) => {
@@ -4447,6 +4492,18 @@ function writeHash() {
   if (S.topMetric !== 'cost') p.set('t', S.topMetric);
   if (S.mixDim !== 'device') p.set('x', S.mixDim);
   if (S.marginMeasure !== 'margin') p.set('mg', S.marginMeasure);
+  // Réglages de l'onglet Sexes, écrits seulement quand il a été ouvert : sans
+  // ce garde, un lien partagé depuis le rapport ferait charger 2 Mo au
+  // destinataire pour un onglet qu'il n'a pas demandé.
+  if (S.genderState === 'ready') {
+    p.set('sx', '1');
+    if (S.genderMetric !== 'cost') p.set('gm', S.genderMetric);
+    if (S.genderGrain !== 'week') p.set('gg', S.genderGrain);
+    if (S.genderScale !== 'volume') p.set('gs', S.genderScale);
+    if (S.genderAccScale !== 'share') p.set('ga', S.genderAccScale);
+    if (S.genderDevScale !== 'share') p.set('gd', S.genderDevScale);
+    if (S.genderEffMetric !== 'roas') p.set('ge', S.genderEffMetric);
+  }
   if (S.aimaxMetric !== 'cost') p.set('am', S.aimaxMetric);
   if (S.aimaxSource !== 'all') p.set('as', S.aimaxSource);
   if (S.liveAction !== null) p.set('ac', S.liveAction);
@@ -4470,7 +4527,7 @@ function readHash() {
   const p = new URLSearchParams(raw);
   const nums = (v) => new Set((v || '').split(',').filter((s) => s !== '').map(Number).filter(Number.isInteger));
 
-  if (['report', 'live'].includes(p.get('vue'))) S.view = p.get('vue');
+  if (['report', 'live', 'gender'].includes(p.get('vue'))) S.view = p.get('vue');
   const r = p.get('r');
   if (r) S.range = r;
   if (p.get('s')) S.start = p.get('s');
@@ -4483,7 +4540,17 @@ function readHash() {
   if (['day', 'week', 'month'].includes(p.get('g'))) S.tsGrain = p.get('g');
   if (['account', 'total'].includes(p.get('v'))) S.tsMode = p.get('v');
   if (METRICS[p.get('t')]) S.topMetric = p.get('t');
-  if (['device', 'network'].includes(p.get('x'))) S.mixDim = p.get('x');
+  if (['device', 'device100', 'network'].includes(p.get('x'))) S.mixDim = p.get('x');
+  if (GENDER_METRICS[p.get('gm')]) S.genderMetric = p.get('gm');
+  if (['day', 'week', 'month'].includes(p.get('gg'))) S.genderGrain = p.get('gg');
+  if (['volume', 'share'].includes(p.get('gs'))) S.genderScale = p.get('gs');
+  if (['volume', 'share'].includes(p.get('ga'))) S.genderAccScale = p.get('ga');
+  if (['volume', 'share'].includes(p.get('gd'))) S.genderDevScale = p.get('gd');
+  if (GENDER_EFF[p.get('ge')]) S.genderEffMetric = p.get('ge');
+  // Chargement différé : le jeu par sexe pèse 2 Mo, il n'arrive que si le lien
+  // le réclame ou si l'onglet est ouvert.
+  S.autoLoadGender = p.get('sx') === '1';
+
   if (AIMAX_METRICS[p.get('am')]) S.aimaxMetric = p.get('am');
   // La source est validée à l'arrivée du fichier, seul juge de ce qui existe.
   if (p.get('as')) S.aimaxSource = p.get('as');
@@ -4517,6 +4584,8 @@ function onFilterChange() {
   // Le filtre de comptes vaut sur les deux vues : le Live doit se redessiner
   // même quand on le change depuis le rapport.
   if (S.liveState === 'ready') renderLive();
+  if (S.genderState === 'ready') renderGenderSection();
+  if (S.view === 'gender') { updateFilterSummaries(); writeHash(); return; }
   if (S.view === 'live') {
     // Le rapport ne se redessine pas ici : c'est lui qui écrit l'URL d'ordinaire.
     updateFilterSummaries();
@@ -4564,6 +4633,7 @@ function doRender() {
   renderEfficiency(rows);
   renderTop(rows);
   renderMargin(rows);
+  if (S.genderState === 'ready') renderGenderSection();
   renderAimaxSection();
   renderMix(sel);
   renderDetail(rows, sel);
@@ -5389,12 +5459,643 @@ function updateLiveAutoRefresh() {
   }
 }
 
+/* ════════════════════════════════════════════════════════════════════════════
+   Onglet Sexes
+
+   Jeu de données distinct (data/gender.json), au grain
+   (date × campagne × sexe × appareil), chargé à la demande.
+
+   Ce que « sexe » veut dire ici, et pourquoi « Inconnu » reste au premier plan.
+
+   La donnée vient de `gender_view`. MALE et FEMALE sont ce que Google a déduit
+   de l'internaute ; UNDETERMINED est l'aveu qu'il n'a pas su trancher. Sur ce
+   MCC cette catégorie porte 40 % du coût — la ranger dans un « autres » la
+   ferait passer pour un résidu, alors qu'elle pèse cinq fois les femmes. Elle a
+   donc sa place, sa couleur et sa ligne partout.
+
+   Vérifié avant de construire : sur les trois comptes les plus dépensiers, la
+   somme des coûts par sexe égale à 100 % le coût total des campagnes. Aucun
+   angle mort à signaler.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/* Colonnes de facts : [date, campagne, sexe, appareil, impr, clics, coût, conv, valeur] */
+const G = { DATE: 0, CAMP: 1, GENDER: 2, DEV: 3, IMPR: 4, CLICKS: 5, COST: 6, CONV: 7, VALUE: 8 };
+
+/**
+ * Teintes fixes, jamais dérivées du volume.
+ *
+ * Un sexe qui changerait de couleur d'un filtre à l'autre rendrait deux
+ * captures d'écran incomparables. Les trois créneaux sont donc figés.
+ */
+const GENDER_SLOT = { MALE: 1, FEMALE: 5, UNDETERMINED: 4 };
+
+const GENDER_METRICS = {
+  cost:     { label: 'Coût',            calc: (t) => t.cost,   fmt: fmtMoney, sum: true },
+  clicks:   { label: 'Clics',           calc: (t) => t.clicks, fmt: fmtInt,   sum: true },
+  impr:     { label: 'Impressions',     calc: (t) => t.impr,   fmt: fmtInt,   sum: true },
+  conv:     { label: 'Conversions',     calc: (t) => t.conv,   fmt: fmtNum1,  sum: true },
+  value:    { label: 'Valeur de conv.', calc: (t) => t.value,  fmt: fmtMoney, sum: true },
+};
+
+const GENDER_EFF = {
+  cpa:      { label: 'CPA',           calc: (t) => (t.conv ? t.cost / t.conv : NaN),     fmt: fmtMoney, dir: -1 },
+  roas:     { label: 'ROAS',          calc: (t) => (t.cost ? t.value / t.cost : NaN),    fmt: fmtRatio, dir: 1 },
+  convRate: { label: 'Taux de conv.', calc: (t) => (t.clicks ? t.conv / t.clicks : NaN), fmt: fmtPct,   dir: 1 },
+  cpc:      { label: 'CPC moyen',     calc: (t) => (t.clicks ? t.cost / t.clicks : NaN), fmt: fmtMoney, dir: -1 },
+  ctr:      { label: 'CTR',           calc: (t) => (t.impr ? t.clicks / t.impr : NaN),   fmt: fmtPct,   dir: 1 },
+};
+
+const emptyG = () => ({ impr: 0, clicks: 0, cost: 0, conv: 0, value: 0 });
+
+function addG(t, f) {
+  t.impr += f[G.IMPR];
+  t.clicks += f[G.CLICKS];
+  t.cost += f[G.COST];
+  t.conv += f[G.CONV];
+  t.value += f[G.VALUE];
+  return t;
+}
+
+/** Indices de comptes retenus par le filtre du haut ; null = tous. */
+function selectedGenderAccounts() {
+  const g = S.gender;
+  if (!g || !S.accounts.size) return null;
+  const names = new Set(
+    [...S.accounts].map((i) => S.data.accounts[i] && S.data.accounts[i].name)
+  );
+  return new Set(g.accounts.map((a, i) => (names.has(a.name) ? i : -1)).filter((i) => i >= 0));
+}
+
+/**
+ * Lignes retenues par les filtres de la barre du haut.
+ *
+ * La période vient du filtre partagé : cet onglet n'a pas son propre sélecteur,
+ * pour qu'on ne puisse pas comparer par erreur un rapport sur 30 jours et une
+ * répartition par sexe sur 180.
+ */
+function genderRows() {
+  const g = S.gender;
+  const allowed = selectedGenderAccounts();
+  const lo = g.dates.findIndex((d) => d >= S.start);
+  let hi = -1;
+  for (let i = g.dates.length - 1; i >= 0; i--) {
+    if (g.dates[i] <= S.end) { hi = i; break; }
+  }
+  if (lo < 0 || hi < lo) return [];
+
+  const out = [];
+  for (const f of g.facts) {
+    if (f[G.DATE] < lo || f[G.DATE] > hi) continue;
+    if (allowed && !allowed.has(g.campaigns[f[G.CAMP]].account)) continue;
+    out.push(f);
+  }
+  return out;
+}
+
+/** Totaux par sexe, sur les lignes retenues. */
+function genderTotals(rows) {
+  const out = S.gender.genders.map(() => emptyG());
+  for (const f of rows) addG(out[f[G.GENDER]], f);
+  return out;
+}
+
+function genderLabel(i) {
+  return S.gender.genderLabels[i] || S.gender.genders[i];
+}
+
+function genderColor(i) {
+  return seriesColor(GENDER_SLOT[S.gender.genders[i]] || (i + 1));
+}
+
+function genderScopeLabel() {
+  const a = selectedGenderAccounts();
+  return a ? `${a.size} compte(s) sur ${S.gender.accounts.length}`
+           : `${S.gender.accounts.length} comptes`;
+}
+
+/* ── Indicateurs ───────────────────────────────────────────────────────────── */
+
+function renderGenderKpis(rows) {
+  const totals = genderTotals(rows);
+  const grand = totals.reduce((s, t) => s + t.cost, 0);
+
+  els.genderKpi.replaceChildren();
+  S.gender.genders.forEach((_, i) => {
+    const t = totals[i];
+    const tile = document.createElement('div');
+    tile.className = 'kpi';
+
+    const lab = document.createElement('div');
+    lab.className = 'kpi__label';
+    lab.textContent = genderLabel(i);
+    tile.appendChild(lab);
+
+    const val = document.createElement('div');
+    val.className = 'kpi__value';
+    val.textContent = compactly(fmtMoney, t.cost);
+    tile.appendChild(val);
+
+    const foot = document.createElement('div');
+    foot.className = 'kpi__foot';
+    const d = document.createElement('span');
+    d.className = 'kpi__delta kpi__delta--flat';
+    d.textContent = `${fmtPct(grand ? t.cost / grand : NaN)} du coût`;
+    foot.appendChild(d);
+    tile.appendChild(foot);
+
+    const note = document.createElement('div');
+    note.className = 'kpi__note';
+    note.textContent = `${fmtInt(t.clicks)} clics · ${fmtNum1(t.conv)} conv. · `
+      + `CPA ${fmtMoney(t.conv ? t.cost / t.conv : NaN)} · `
+      + `ROAS ${fmtRatio(t.cost ? t.value / t.cost : NaN)}`;
+    tile.appendChild(note);
+
+    els.genderKpi.appendChild(tile);
+  });
+}
+
+/* ── Évolution ─────────────────────────────────────────────────────────────── */
+
+function renderGenderTime(rows) {
+  const g = S.gender;
+  const m = GENDER_METRICS[S.genderMetric];
+  const share = S.genderScale === 'share';
+
+  // Regroupement temporel à partir des dates de CE jeu de données, qui ne
+  // couvrent pas forcément la même étendue que data.json. La clé et le libellé
+  // viennent des mêmes fonctions que le rapport : deux onglets qui nommeraient
+  // les semaines différemment seraient impossibles à rapprocher.
+  const grain = S.genderGrain;
+  const keyOf = (di) => grainKey(g.dates[di], grain);
+
+  const buckets = new Map();
+  for (const f of rows) {
+    const k = keyOf(f[G.DATE]);
+    let slot = buckets.get(k);
+    if (!slot) buckets.set(k, (slot = g.genders.map(() => emptyG())));
+    addG(slot[f[G.GENDER]], f);
+  }
+
+  const keys = [...buckets.keys()].sort();
+  if (!keys.length) {
+    els.genderTimeSub.textContent = '';
+    emptyState(els.genderTimeBody, 'Aucune donnée sur cette sélection.');
+    return;
+  }
+
+  const series = g.genders.map((_, i) => ({
+    key: String(i),
+    name: genderLabel(i),
+    color: genderColor(i),
+    values: keys.map((k) => {
+      const slot = buckets.get(k);
+      const v = m.calc(slot[i]);
+      if (!share) return v;
+      const total = slot.reduce((s, t) => s + m.calc(t), 0);
+      return total ? v / total * 100 : 0;
+    }),
+  }));
+
+  els.genderTimeSub.textContent =
+    `${m.label} · ${grain === 'day' ? 'par jour' : grain === 'week' ? 'par semaine' : 'par mois'}`
+    + (share ? ' · part de chaque sexe, ramenée à 100 % par période' : '')
+    + ` · ${genderScopeLabel()}`;
+
+  if (S.views.gendertime === 'table') {
+    renderTable(els.genderTimeBody, {
+      scroll: true,
+      caption: `${m.label} par sexe et par période`,
+      cols: [
+        { key: 'k', label: grain === 'month' ? 'Mois' : grain === 'week' ? 'Semaine' : 'Jour', text: true },
+        ...g.genders.map((_, i) => ({
+          key: String(i),
+          label: genderLabel(i),
+          fmt: share ? ((v) => `${nf1.format(v)} %`) : ((v) => m.fmt(v)),
+        })),
+      ],
+      rows: keys.map((k, ki) => {
+        const row = { k: grainLabel(k, grain) };
+        series.forEach((s, i) => { row[String(i)] = s.values[ki]; });
+        return row;
+      }),
+    });
+    return;
+  }
+
+  renderLineChart(els.genderTimeBody, {
+    xLabels: keys.map((k) => grainLabel(k, grain)),
+    series,
+    fmt: share ? ((v) => `${nf1.format(v)} %`) : m.fmt,
+    endLabel: true,
+    height: 300,
+    // Additionner des parts n'a pas de sens ; additionner des volumes, oui.
+    summable: !share,
+    ariaLabel: `${m.label} par sexe dans le temps`,
+  });
+}
+
+/* ── Répartition par compte ────────────────────────────────────────────────── */
+
+function renderGenderByAccount(rows) {
+  const g = S.gender;
+  const share = S.genderAccScale === 'share';
+
+  const perAccount = new Map();
+  for (const f of rows) {
+    const ai = g.campaigns[f[G.CAMP]].account;
+    let slot = perAccount.get(ai);
+    if (!slot) perAccount.set(ai, (slot = g.genders.map(() => emptyG())));
+    addG(slot[f[G.GENDER]], f);
+  }
+
+  const all = [...perAccount.entries()]
+    .map(([ai, slots]) => {
+      const values = {};
+      let total = 0;
+      slots.forEach((t, i) => { values[String(i)] = t.cost; total += t.cost; });
+      return { label: g.accounts[ai].name, values, total };
+    })
+    .filter((r) => r.total > 0)
+    .sort((a, b) => b.total - a.total);
+
+  els.genderAccSub.textContent = share
+    ? `Composition du coût par sexe, chaque compte ramené à 100 % · ${genderScopeLabel()}`
+    : `Coût par compte, ventilé par sexe · ${genderScopeLabel()}`;
+
+  if (!all.length) {
+    emptyState(els.genderAccBody, 'Aucune dépense sur cette sélection.');
+    return;
+  }
+
+  const series = g.genders.map((_, i) => ({
+    key: String(i), name: genderLabel(i), color: genderColor(i),
+  }));
+
+  if (S.views.genderacc === 'table') {
+    renderTable(els.genderAccBody, {
+      scroll: true,
+      caption: 'Coût par compte et par sexe',
+      cols: [
+        { key: 'label', label: 'Compte', text: true },
+        ...series.map((s) => ({
+          key: s.key, label: s.name,
+          fmt: share ? ((v) => fmtPct(v || 0)) : ((v) => fmtMoney(v || 0)),
+        })),
+        { key: 'total', label: share ? 'Dépense' : 'Total', fmt: (v) => fmtMoney(v) },
+      ],
+      rows: all.map((r) => {
+        const out = { label: r.label, total: r.total };
+        for (const s of series) {
+          const v = r.values[s.key] || 0;
+          out[s.key] = share ? (r.total ? v / r.total : 0) : v;
+        }
+        return out;
+      }),
+      foot: (() => {
+        const tot = all.reduce((a, r) => a + r.total, 0);
+        const f = { label: 'Total', total: tot };
+        for (const s of series) {
+          const sum = all.reduce((a, r) => a + (r.values[s.key] || 0), 0);
+          f[s.key] = share ? (tot ? sum / tot : 0) : sum;
+        }
+        return f;
+      })(),
+    });
+    return;
+  }
+
+  // Plafond de lignes pour le graphique ; le tableau reste exhaustif.
+  const MAX = 12;
+  let shown = all;
+  if (all.length > MAX) {
+    const tail = all.slice(MAX);
+    const merged = { label: `Autres (${tail.length} comptes)`, values: {}, total: 0 };
+    for (const r of tail) {
+      for (const k in r.values) merged.values[k] = (merged.values[k] || 0) + r.values[k];
+      merged.total += r.total;
+    }
+    shown = [...all.slice(0, MAX), merged];
+    els.genderAccSub.textContent += ` · ${MAX} premiers sur ${all.length}`;
+  }
+
+  renderStackedBars(els.genderAccBody, {
+    rows: shown, series, fmt: fmtMoney, normalize: share,
+    ariaLabel: 'Coût par compte ventilé par sexe',
+  });
+}
+
+/* ── Efficacité ────────────────────────────────────────────────────────────── */
+
+function renderGenderEfficiency(rows) {
+  const g = S.gender;
+  const m = GENDER_EFF[S.genderEffMetric];
+  const totals = genderTotals(rows);
+
+  const items = g.genders
+    .map((_, i) => ({ i, t: totals[i], v: m.calc(totals[i]) }))
+    .filter((r) => r.t.cost > 0 || r.t.clicks > 0);
+
+  els.genderEffSub.textContent =
+    `${m.label} par sexe, recalculé sur les totaux agrégés · ${genderScopeLabel()}`;
+
+  if (!items.length || items.every((r) => !isFinite(r.v))) {
+    emptyState(els.genderEffBody, `${m.label} non calculable sur cette sélection.`);
+    return;
+  }
+
+  if (S.views.gendereff === 'table') {
+    renderTable(els.genderEffBody, {
+      caption: `Indicateurs par sexe`,
+      cols: [
+        { key: 'name', label: 'Sexe', text: true },
+        { key: 'cost', label: 'Coût', fmt: (v) => fmtMoney(v) },
+        { key: 'clicks', label: 'Clics', fmt: (v) => fmtInt(v) },
+        { key: 'conv', label: 'Conv.', fmt: fmtNum1 },
+        { key: 'cpa', label: 'CPA', fmt: (v) => fmtMoney(v) },
+        { key: 'roas', label: 'ROAS', fmt: fmtRatio },
+        { key: 'convRate', label: 'Taux conv.', fmt: fmtPct },
+      ],
+      rows: items.map((r) => ({
+        name: genderLabel(r.i),
+        cost: r.t.cost, clicks: r.t.clicks, conv: r.t.conv,
+        cpa: GENDER_EFF.cpa.calc(r.t),
+        roas: GENDER_EFF.roas.calc(r.t),
+        convRate: GENDER_EFF.convRate.calc(r.t),
+      })),
+    });
+    return;
+  }
+
+  renderBarChart(els.genderEffBody, {
+    items: items.filter((r) => isFinite(r.v)).map((r) => ({
+      label: genderLabel(r.i),
+      value: r.v,
+      color: genderColor(r.i),
+      rows: [
+        { name: m.label, value: m.fmt(r.v) },
+        { name: 'Coût', value: fmtMoney(r.t.cost) },
+        { name: 'Clics', value: fmtInt(r.t.clicks) },
+        { name: 'Conversions', value: fmtNum1(r.t.conv) },
+      ],
+    })),
+    fmt: m.fmt, color: seriesColor(1), metricLabel: m.label,
+    refLine: S.genderEffMetric === 'roas' ? { value: 1, label: 'seuil de rentabilité' } : null,
+    ariaLabel: `${m.label} par sexe`,
+  });
+}
+
+/* ── Sexe par appareil ─────────────────────────────────────────────────────── */
+
+function renderGenderByDevice(rows) {
+  const g = S.gender;
+  const share = S.genderDevScale === 'share';
+
+  const perDevice = new Map();
+  for (const f of rows) {
+    let slot = perDevice.get(f[G.DEV]);
+    if (!slot) perDevice.set(f[G.DEV], (slot = g.genders.map(() => emptyG())));
+    addG(slot[f[G.GENDER]], f);
+  }
+
+  const all = [...perDevice.entries()]
+    .map(([di, slots]) => {
+      const values = {};
+      let total = 0;
+      slots.forEach((t, i) => { values[String(i)] = t.cost; total += t.cost; });
+      return { label: label(DEVICE_LABELS, g.devices[di]), values, total };
+    })
+    .filter((r) => r.total > 0)
+    .sort((a, b) => b.total - a.total);
+
+  els.genderDevSub.textContent = share
+    ? `Composition du coût par sexe, chaque appareil ramené à 100 % · ${genderScopeLabel()}`
+    : `Coût par appareil, ventilé par sexe · ${genderScopeLabel()}`;
+
+  if (!all.length) {
+    emptyState(els.genderDevBody, 'Aucune dépense sur cette sélection.');
+    return;
+  }
+
+  const series = g.genders.map((_, i) => ({
+    key: String(i), name: genderLabel(i), color: genderColor(i),
+  }));
+
+  if (S.views.genderdev === 'table') {
+    renderTable(els.genderDevBody, {
+      caption: 'Coût par appareil et par sexe',
+      cols: [
+        { key: 'label', label: 'Appareil', text: true },
+        ...series.map((s) => ({
+          key: s.key, label: s.name,
+          fmt: share ? ((v) => fmtPct(v || 0)) : ((v) => fmtMoney(v || 0)),
+        })),
+        { key: 'total', label: share ? 'Dépense' : 'Total', fmt: (v) => fmtMoney(v) },
+      ],
+      rows: all.map((r) => {
+        const out = { label: r.label, total: r.total };
+        for (const s of series) {
+          const v = r.values[s.key] || 0;
+          out[s.key] = share ? (r.total ? v / r.total : 0) : v;
+        }
+        return out;
+      }),
+    });
+    return;
+  }
+
+  renderStackedBars(els.genderDevBody, {
+    rows: all, series, fmt: fmtMoney, normalize: share,
+    ariaLabel: 'Coût par appareil ventilé par sexe',
+  });
+}
+
+/* ── Détail par campagne ───────────────────────────────────────────────────── */
+
+function renderGenderCampaigns(rows) {
+  const g = S.gender;
+
+  const perCamp = new Map();
+  for (const f of rows) {
+    let slot = perCamp.get(f[G.CAMP]);
+    if (!slot) perCamp.set(f[G.CAMP], (slot = g.genders.map(() => emptyG())));
+    addG(slot[f[G.GENDER]], f);
+  }
+
+  const list = [...perCamp.entries()].map(([ci, slots]) => {
+    const c = g.campaigns[ci];
+    const tot = emptyG();
+    for (const t of slots) {
+      tot.impr += t.impr; tot.clicks += t.clicks; tot.cost += t.cost;
+      tot.conv += t.conv; tot.value += t.value;
+    }
+    const row = {
+      name: c.name,
+      _sub: g.accounts[c.account].name,
+      _swatch: genderColor(slots.reduce((best, t, i) =>
+        (t.cost > slots[best].cost ? i : best), 0)),
+      cost: tot.cost,
+      conv: tot.conv,
+      roas: tot.cost ? tot.value / tot.cost : NaN,
+    };
+    g.genders.forEach((_, i) => {
+      row[`g${i}`] = tot.cost ? slots[i].cost / tot.cost : 0;
+    });
+    return row;
+  }).sort((a, b) => b.cost - a.cost);
+
+  els.genderCampSub.textContent =
+    `${list.length} campagne(s) · la pastille reprend la couleur du sexe dominant · `
+    + `les colonnes par sexe sont des parts du coût de la campagne`;
+
+  if (!list.length) {
+    emptyState(els.genderCampBody, 'Aucune dépense sur cette sélection.');
+    return;
+  }
+
+  renderTable(els.genderCampBody, {
+    scroll: true,
+    caption: 'Répartition du coût par campagne et par sexe',
+    cols: [
+      { key: 'name', label: 'Campagne', text: true },
+      { key: 'cost', label: 'Coût', fmt: (v) => fmtMoney(v) },
+      ...g.genders.map((_, i) => ({ key: `g${i}`, label: genderLabel(i), fmt: fmtPct })),
+      { key: 'conv', label: 'Conv.', fmt: fmtNum1 },
+      { key: 'roas', label: 'ROAS', fmt: fmtRatio },
+    ],
+    rows: list,
+  });
+}
+
+/* ── Orchestration ─────────────────────────────────────────────────────────── */
+
+function renderGenderSection() {
+  if (S.genderState !== 'ready') return;
+  // Résolution de la période avant toute lecture de S.start / S.end : le
+  // rapport la fait dans doRender, chemin que cet onglet ne traverse pas. Sans
+  // cet appel, ouvrir directement l'onglet donnait des bornes nulles.
+  // La fonction est idempotente : la rappeler ne déplace rien.
+  resolveRange();
+
+  const g = S.gender;
+  const rows = genderRows();
+
+  els.genderMeta.textContent =
+    `${fmtDateLong(S.start)} – ${fmtDateLong(S.end)} · ${genderScopeLabel()} · `
+    + `données disponibles du ${fmtDateLong(g.meta.date_start)} au `
+    + `${fmtDateLong(g.meta.date_end)}`;
+
+  // Ce que le lecteur ne peut pas deviner et qui change la lecture.
+  const totals = genderTotals(rows);
+  const grand = totals.reduce((s, t) => s + t.cost, 0);
+  const undet = g.genders.indexOf('UNDETERMINED');
+  const notes = [];
+  if (undet >= 0 && grand > 0) {
+    notes.push(
+      `« Inconnu » n'est pas une catégorie de personnes : c'est l'aveu que Google `
+      + `n'a pas su déterminer le sexe. Ces `
+      + `${fmtPct(totals[undet].cost / grand)} du coût ne sont donc ni des hommes `
+      + `ni des femmes, mais un angle mort de la mesure — le réduire passe par le `
+      + `ciblage démographique des campagnes, pas par ce rapport.`
+    );
+  }
+  els.genderNote.replaceChildren();
+  for (const n of notes) {
+    const s = document.createElement('span');
+    s.textContent = n;
+    els.genderNote.appendChild(s);
+  }
+  els.genderNote.hidden = !notes.length;
+
+  if (!rows.length) {
+    els.genderKpi.replaceChildren();
+    const msg = selectedGenderAccounts() && !selectedGenderAccounts().size
+      ? `Aucun des comptes filtrés n'a de donnée démographique. `
+        + `Seuls ces comptes en produisent : ${g.accounts.map((a) => a.name).join(', ')}.`
+      : `Aucune donnée sur cette période. Le jeu couvre du `
+        + `${fmtDateLong(g.meta.date_start)} au ${fmtDateLong(g.meta.date_end)}.`;
+    for (const el of [els.genderTimeBody, els.genderAccBody, els.genderEffBody,
+                      els.genderDevBody, els.genderCampBody]) {
+      emptyState(el, msg);
+    }
+    return;
+  }
+
+  renderGenderKpis(rows);
+  renderGenderTime(rows);
+  renderGenderByAccount(rows);
+  renderGenderEfficiency(rows);
+  renderGenderByDevice(rows);
+  renderGenderCampaigns(rows);
+}
+
+async function loadGender() {
+  if (S.genderState === 'loading' || S.genderState === 'ready') return;
+  S.genderState = 'loading';
+  els.genderLoad.disabled = true;
+  els.genderLoad.textContent = 'Chargement…';
+
+  try {
+    const res = await fetch('data/gender.json', { cache: 'no-cache' });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    S.gender = await res.json();
+  } catch (err) {
+    S.genderState = 'error';
+    els.genderLoad.disabled = false;
+    els.genderLoad.textContent = 'Réessayer';
+    els.genderError.replaceChildren();
+    const s = document.createElement('strong');
+    s.textContent = 'Données par sexe indisponibles.';
+    els.genderError.appendChild(s);
+    const d = document.createElement('span');
+    d.textContent = `Impossible de charger data/gender.json (${err.message}). `
+      + `Générez-le avec « python scripts/fetch_gender.py ».`;
+    els.genderError.appendChild(d);
+    els.genderError.hidden = false;
+    return;
+  }
+
+  S.genderState = 'ready';
+  els.genderError.hidden = true;
+  els.genderLoader.hidden = true;
+  els.genderContent.hidden = false;
+
+  fillSelectFrom(els.genderMetric, GENDER_METRICS, S.genderMetric);
+  els.genderMetric.addEventListener('change', () => {
+    S.genderMetric = els.genderMetric.value;
+    renderGenderSection();
+  });
+
+  fillSelectFrom(els.genderEffMetric, GENDER_EFF, S.genderEffMetric);
+  els.genderEffMetric.addEventListener('change', () => {
+    S.genderEffMetric = els.genderEffMetric.value;
+    renderGenderSection();
+  });
+
+  buildSegmented(els.genderGrain,
+    [{ key: 'day', label: 'Jour' }, { key: 'week', label: 'Semaine' },
+     { key: 'month', label: 'Mois' }],
+    () => S.genderGrain, (k) => { S.genderGrain = k; renderGenderSection(); });
+
+  const scale = [{ key: 'volume', label: 'Volume' }, { key: 'share', label: 'Base 100' }];
+  buildSegmented(els.genderScale, scale,
+    () => S.genderScale, (k) => { S.genderScale = k; renderGenderSection(); });
+  buildSegmented(els.genderAccScale, scale,
+    () => S.genderAccScale, (k) => { S.genderAccScale = k; renderGenderSection(); });
+  buildSegmented(els.genderDevScale, scale,
+    () => S.genderDevScale, (k) => { S.genderDevScale = k; renderGenderSection(); });
+
+  buildViewToggles();
+  renderGenderSection();
+  writeHash();
+}
+
 /* ── Navigation entre vues ────────────────────────────────────────────────── */
 
 function setView(view) {
   S.view = view;
   els.contenu.hidden = view !== 'report';
   els.viewLive.hidden = view !== 'live';
+  els.viewGender.hidden = view !== 'gender';
   // La barre reste visible sur les deux vues : le filtre de comptes vaut
   // partout. Seuls les contrôles sans objet sur le Live sont masqués — période,
   // appareil, réseau et recherche de campagne n'y ont pas de sens, la vue
@@ -5404,6 +6105,10 @@ function setView(view) {
     n.hidden = view !== 'report';
   }
   els.filterAction.hidden = view !== 'live';
+  // L'onglet Sexes partage la période et les comptes du rapport, mais pas
+  // l'appareil ni le réseau : sa propre ventilation par appareil s'y
+  // superposerait, et deux filtres qui se recoupent invitent à des lectures
+  // fausses.
   for (const b of els.viewTabs.querySelectorAll('button')) {
     const on = b.dataset.key === view;
     b.setAttribute('aria-pressed', String(on));
@@ -5411,9 +6116,11 @@ function setView(view) {
   }
   writeHash();
   if (view === 'live' && S.liveState === 'idle') loadLive();
+  if (view === 'gender' && S.genderState === 'idle') loadGender();
   // Les SVG sont dimensionnés sur une largeur mesurée : un conteneur masqué
   // mesure zéro, il faut redessiner en revenant sur la vue.
   if (view === 'report') render();
+  else if (view === 'gender') renderGenderSection();
   else if (S.liveState === 'ready') renderLive();
   else els.filterStatus.textContent = 'Direct en cours de chargement…';
 
@@ -5523,6 +6230,18 @@ function cacheEls() {
     velocityBody: 'velocity-body', velocitySub: 'velocity-sub', velocityBid: 'velocity-bid',
     marginalBody: 'marginal-body', marginalSub: 'marginal-sub',
     contenu: 'contenu', viewLive: 'view-live', viewTabs: 'view-tabs',
+    viewGender: 'view-gender', genderError: 'gender-error', genderNote: 'gender-note',
+    genderLoader: 'gender-loader', genderLoad: 'gender-load', genderContent: 'gender-content',
+    genderMeta: 'gender-meta', genderKpi: 'gender-kpi', genderMetric: 'gender-metric',
+    genderGrain: 'gender-grain', genderScale: 'gender-scale',
+    genderTimeBody: 'gender-time-body', genderTimeSub: 'gender-time-sub',
+    genderAccBody: 'gender-acc-body', genderAccSub: 'gender-acc-sub',
+    genderAccScale: 'gender-acc-scale',
+    genderEffBody: 'gender-eff-body', genderEffSub: 'gender-eff-sub',
+    genderEffMetric: 'gender-eff-metric',
+    genderDevBody: 'gender-dev-body', genderDevSub: 'gender-dev-sub',
+    genderDevScale: 'gender-dev-scale',
+    genderCampBody: 'gender-camp-body', genderCampSub: 'gender-camp-sub',
     filterbar: 'filterbar',
     liveError: 'live-error', liveTz: 'live-tz', liveAlertSlot: 'live-alert-slot',
     liveMeta: 'live-meta', liveKpi: 'live-kpi',
@@ -5553,7 +6272,8 @@ function showFatal(message) {
 
 function wireControls() {
   buildSegmented(els.viewTabs,
-    [{ key: 'report', label: 'Rapport' }, { key: 'live', label: 'Live' }],
+    [{ key: 'report', label: 'Rapport' }, { key: 'live', label: 'Live' },
+     { key: 'gender', label: 'Sexes' }],
     () => S.view, setView);
 
   buildSegmented(els.rangePresets, RANGE_PRESETS, () => S.range, (k) => {
@@ -5600,8 +6320,14 @@ function wireControls() {
     [{ key: 'account', label: 'Par compte' }, { key: 'total', label: 'Total' }],
     () => S.tsMode, (k) => { S.tsMode = k; render(); });
 
+  // « Base 100 » est la même ventilation par appareil, chaque compte ramené à
+  // 100 % : elle répond à « quelle est la composition » quand la vue en volume
+  // répond à « qui dépense ». Sur un portefeuille où un compte pèse dix fois
+  // les autres, la seconde écrase la première.
   buildSegmented(els.mixDim,
-    [{ key: 'device', label: 'Appareil' }, { key: 'network', label: 'Réseau' }],
+    [{ key: 'device', label: 'Appareil' },
+     { key: 'device100', label: 'Base 100' },
+     { key: 'network', label: 'Réseau' }],
     () => S.mixDim, (k) => { S.mixDim = k; render(); });
 
   buildViewToggles();
@@ -5627,6 +6353,7 @@ function wireControls() {
 
   els.exportCsv.addEventListener('click', exportCsv);
   els.semLoad.addEventListener('click', loadTerms);
+  els.genderLoad.addEventListener('click', loadGender);
 
   // Un clic hors d'un menu le referme.
   document.addEventListener('click', (ev) => {
@@ -5694,6 +6421,7 @@ async function init() {
   loadAimax();
 
   if (S.autoLoadTerms) loadTerms();
+  if (S.autoLoadGender) loadGender();
 }
 
 document.addEventListener('DOMContentLoaded', init);
