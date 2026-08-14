@@ -5201,6 +5201,14 @@ async function loadLive() {
   buildViewToggles();
 
   els.liveRefresh.addEventListener('click', () => refreshLive(false));
+  // Le lien part vers GitHub dans un autre onglet : on rappelle ici la suite,
+  // faute de quoi on revient sur un tableau inchangé sans savoir qu'il faut
+  // attendre puis actualiser.
+  els.liveRegen.addEventListener('click', () => {
+    els.liveRefreshNote.textContent =
+      'Sur GitHub : cliquez « Run workflow ». Revenez actualiser dans deux minutes.';
+    els.liveRefreshNote.className = 'live-refresh__note';
+  });
   // Reprendre la relecture au retour sur l'onglet, et l'arrêter en le quittant :
   // une minuterie qui tourne sur une fenêtre en arrière-plan ne sert personne.
   document.addEventListener('visibilitychange', updateLiveAutoRefresh);
@@ -5226,6 +5234,41 @@ async function loadLive() {
    secrets. Ce bouton sert à récupérer son dernier résultat sans F5, et à dire
    franchement quand ce résultat n'a pas bougé.
    ═══════════════════════════════════════════════════════════════════════════ */
+
+/**
+ * Dépôt qui héberge les workflows de régénération.
+ *
+ * Déduit de l'URL quand la page est servie par GitHub Pages, ce qui évite une
+ * constante à maintenir en double — un fork ou un renommage casserait un lien
+ * codé en dur sans que rien ne le signale. En local, l'URL ne dit rien du dépôt
+ * et les boutons se masquent : mieux vaut pas de bouton qu'un bouton qui mène
+ * ailleurs.
+ */
+function repoBase() {
+  const m = /^([a-z0-9-]+)\.github\.io$/i.exec(location.hostname);
+  if (!m) return null;
+  const project = location.pathname.split('/').filter(Boolean)[0];
+  if (!project) return null;
+  return `https://github.com/${m[1]}/${project}`;
+}
+
+/** Câble les deux liens vers les workflows, ou les masque si l'origine est locale. */
+function wireRegenLinks() {
+  const base = repoBase();
+  const targets = [
+    { el: els.liveRegen, file: 'refresh-live.yml' },
+    { el: els.reportRegen, file: 'refresh-data.yml' },
+  ];
+  for (const t of targets) {
+    if (!t.el) continue;
+    if (!base) {
+      t.el.hidden = true;
+      continue;
+    }
+    t.el.hidden = false;
+    t.el.href = `${base}/actions/workflows/${t.file}`;
+  }
+}
 
 const LIVE_AUTO_MS = 5 * 60 * 1000;
 let liveAutoTimer = null;
@@ -5485,6 +5528,7 @@ function cacheEls() {
     liveMeta: 'live-meta', liveKpi: 'live-kpi',
     liveRefresh: 'live-refresh', liveRefreshLabel: 'live-refresh-label',
     liveRefreshNote: 'live-refresh-note',
+    liveRegen: 'live-regen', reportRegen: 'report-regen',
     liveHourlyBody: 'live-hourly-body', liveHourlySub: 'live-hourly-sub',
     liveMetric: 'live-metric', liveCumul: 'live-cumul',
     liveActionsBody: 'live-actions-body', liveActionsSub: 'live-actions-sub',
@@ -5638,6 +5682,7 @@ async function init() {
     ? data.meta.currency : (data.accounts[0] && data.accounts[0].currency) || 'EUR';
 
   setupHeader();
+  wireRegenLinks();
   readHash();
   wireControls();
   onFilterChange();

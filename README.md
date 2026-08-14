@@ -180,14 +180,26 @@ ne s'exécute côté serveur. Régénérer suppose d'appeler l'API Google Ads, d
 détenir un jeton — et un jeton posé dans une page publique est un jeton
 compromis, définitivement. Il n'existe pas de version prudente de cette idée.
 
-La régénération appartient au workflow `refresh-live.yml`, qui détient les
-secrets. Trois façons de la déclencher :
+La régénération appartient aux workflows, qui détiennent les secrets. Deux
+boutons **Régénérer ↗** y conduisent en un clic : celui du Live ouvre
+`refresh-live.yml`, celui de l'en-tête des indicateurs clés ouvre
+`refresh-data.yml`. Il reste à cliquer **Run workflow** sur GitHub, puis à
+revenir actualiser.
+
+Leur URL est **déduite de celle de la page** et non codée en dur : un fork ou un
+renommage du dépôt les suivrait, là où une constante aurait pointé dans le vide
+sans rien signaler. En local, l'origine ne dit rien du dépôt et les deux boutons
+se masquent — mieux vaut pas de bouton qu'un bouton qui mène ailleurs.
 
 | Moyen | Délai |
 |---|---|
 | Cron du workflow, toutes les 15 min de 6 h à 23 h (Paris) | 15 à 30 min, redéploiement Pages compris |
-| **Actions → Rafraîchir les données du jour → Run workflow** | ~2 min |
+| **Bouton Régénérer ↗ → Run workflow** | ~2 min pour le Live, 3 à 4 pour le rapport |
 | `python scripts/fetch_live.py` en local, puis commit + push | ~1 min |
+
+Les boutons sont visibles par tout visiteur de la page publique, mais ne mènent
+qu'à GitHub : lancer un workflow demande un accès en écriture au dépôt. Si vous
+préférez les masquer aux visiteurs, dites-le — un drapeau dans l'URL suffit.
 
 **Prérequis, et il n'est pas rempli aujourd'hui :** sans les cinq secrets Google
 Ads dans les paramètres du dépôt, le workflow s'abstient proprement et

@@ -130,11 +130,21 @@
         <p class="section__sub" id="live-meta"></p>
       </div>
       <div class="live-refresh">
-        <button type="button" class="btn btn--ghost" id="live-refresh"
-                title="Relire data/live.json sans recharger la page">
-          <span class="live-refresh__glyph" aria-hidden="true"></span>
-          <span id="live-refresh-label">Actualiser</span>
-        </button>
+        <div class="live-refresh__row">
+          <button type="button" class="btn btn--ghost" id="live-refresh"
+                  title="Relire data/live.json sans recharger la page">
+            <span class="live-refresh__glyph" aria-hidden="true"></span>
+            <span id="live-refresh-label">Actualiser</span>
+          </button>
+          <!-- Lien et non appel direct : régénérer demande un jeton Google Ads,
+               qui n'a rien à faire dans une page publique. GitHub Actions le
+               détient ; ce bouton y conduit. -->
+          <a class="btn btn--ghost header-link" id="live-regen" target="_blank"
+             rel="noopener" href="#"
+             title="Ouvre le workflow sur GitHub. Cliquez « Run workflow », puis revenez actualiser dans deux minutes. Nécessite un accès au dépôt.">
+            Régénérer <span aria-hidden="true">↗</span>
+          </a>
+        </div>
         <p class="live-refresh__note" id="live-refresh-note"></p>
       </div>
     </div>
@@ -208,9 +218,16 @@
 
   <!-- ── Indicateurs clés ─────────────────────────────────────────────── -->
   <section class="section" aria-labelledby="h-kpi">
-    <div class="section__head">
+    <div class="section__head section__head--split">
       <h2 id="h-kpi">Indicateurs clés</h2>
-      <p class="section__sub" id="kpi-compare"></p>
+      <div class="live-refresh">
+        <a class="btn btn--ghost header-link" id="report-regen" target="_blank"
+           rel="noopener" href="#"
+           title="Ouvre le workflow quotidien sur GitHub. Cliquez « Run workflow », puis rechargez la page dans deux à trois minutes. Nécessite un accès au dépôt.">
+          Régénérer <span aria-hidden="true">↗</span>
+        </a>
+        <p class="section__sub" id="kpi-compare"></p>
+      </div>
     </div>
     <div class="kpi-grid" id="kpi-grid"></div>
   </section>
