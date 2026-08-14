@@ -176,23 +176,93 @@ le publier délibérément : `git add -f data/aimax.json`.
 `data/changelog.json` (`python scripts/fetch_changelog.py`). Chargé à l'ouverture
 de l'onglet.
 
+### Périmètre : neuf comptes
+
+L'onglet ne regarde que les comptes réellement suivis — un diagnostic sur un
+compte que personne ne surveille produit des alertes que personne ne traitera, et
+noie celles qui comptent :
+
+`gdm_spiice-google-fr` · `gdm_jacquie_michel_contact_fr` ·
+`2lm_jacquie_et_michel_rencontre` · `gdm_femme-liberee_homme` · `Easyflirt` ·
+`JM_SWIPE` · `Onlydate_93781` · `fr_sexy_1` · `fr_love_toprencontreserieuse`
+
+La liste est la constante `TRACKING_SCOPE` dans `assets/app.js`. Deux comptes
+« Spiice » existent : `gdm_spiice-google-fr` (Recherche) est dans le périmètre,
+`gdm_Spiice_App` et `Spiice_Display` non. Sélectionner un compte hors périmètre
+dans la barre du haut affiche un message explicite, pas un onglet vide.
+
+Sur ce périmètre, la part des conversions vues par les enchères tombe à **4,2 %**
+(contre 10,6 % sur les 21 comptes actifs) : l'essentiel de ce qui est mesuré ici
+n'optimise rien.
+
 ### ⚠️ Ce que l'API Google Ads ne sait pas
 
-Sondé sur la v25 avant d'écrire une ligne d'interface :
+Sondé sur la v25 avant d'écrire une ligne d'interface, puis vérifié
+exhaustivement : **les 181 ressources de la v25 ont été énumérées**, et les 30
+champs de `conversion_action` listés un par un.
 
 | Demandé | Réponse de l'API |
 |---|---|
 | Taux de Consent Mode granted / denied | **`%consent%` → 0 champ** |
 | Conversions modélisées vs observées | **`%model%led%` → 0 champ** |
+| Écran *Diagnostics* d'une action de conversion | **aucune ressource ne l'expose** |
 
-Ces deux données existent dans la CMP (Didomi), dans GTM et dans GA4 — pas dans
-Google Ads. Afficher « 98 % de consentement » à partir de rien serait le pire
-service à rendre à quelqu'un qui cherche une cassure de mesure, donc l'onglet ne
-le fait pas. Il mesure le tracking par ses **effets**, et le dit dans un bandeau
-permanent.
+L'écran `MCC > Goals > Conversions > Summary > [action] > Diagnostics` de
+l'interface n'a pas d'équivalent API. Les champs les plus proches de
+`conversion_action` sont `attribution_model_settings.data_driven_model_status`
+(disponibilité du modèle d'attribution, pas la modélisation des conversions),
+`origin`, `status`, `type` et `tag_snippets`. Aucun ne porte le statut du
+consentement.
+
+Ces données existent dans la CMP (Didomi), dans GTM et dans GA4. Afficher « 98 %
+de consentement » à partir de rien serait le pire service à rendre à quelqu'un
+qui cherche une cassure de mesure, donc l'onglet ne le fait pas. Il mesure le
+tracking par ses **effets**, et le dit dans un bandeau permanent.
 
 Le taux de consentement s'affiche quand vous le fournissez, via la colonne
 `consent_rate` du Sheet (voir plus bas). Il vient de là, jamais d'ici.
+
+### Le seul diagnostic que l'API expose vraiment
+
+`offline_conversion_upload_conversion_action_summary` — pour les conversions
+**importées** uniquement. Il donne, par action : un statut
+(`EXCELLENT` / `GOOD` / `NEEDS_ATTENTION` / `NO_RECENT_UPLOAD`), le nombre
+d'événements envoyés et acceptés, la date du dernier envoi, la source (API,
+interface, connecteur) et les **motifs de rejet**, traduits en français avec le
+code d'origine conservé entre parenthèses.
+
+Piège qui m'a d'abord fait conclure à tort que la ressource était vide : elle ne
+répond **que sur le compte propriétaire des conversions**
+(`conversion_tracking_setting.google_ads_conversion_customer`). Interrogée sur un
+compte enfant d'un suivi mutualisé, elle renvoie zéro ligne **sans erreur**, ce
+qui se lit comme « aucun import ». Le script interroge donc les comptes
+propriétaires, pas les enfants.
+
+Sur ce MCC : trois actions importées, toutes `EXCELLENT`, avec des rejets
+`EXPIRED_EVENT` sur deux d'entre elles. Et un cas à vérifier — `sales` est
+rapportée comme importée avec succès le 12 août alors qu'elle ne produit plus
+aucune conversion sur les comptes suivis depuis le 26 mai. Les deux faits peuvent
+coexister (envoi accepté mais attribué ailleurs) ; la carte le signale sans
+conclure.
+
+### Comparaison des balises d'un même objectif
+
+`conversion_action.category` permet de comparer les balises **à l'intérieur d'un
+objectif** : Inscription (`SIGNUP`), Abonnement payant (`SUBSCRIBE_PAID`),
+Téléchargement (`DOWNLOAD`)… Le sélecteur ne propose que les objectifs
+réellement présents dans la période et les comptes filtrés.
+
+C'est la carte qui distingue une **migration réussie** d'une **perte de mesure** —
+deux choses qui se ressemblent parfaitement sur un total. Sur les données
+réelles : `GOOGLE TAG - INSCRIPTION SOI - MCC BO` et
+`GOOGLE TAG - INSCRIPTION SOI 2026 - MCC BO (MP>sGTM<Ads)` évoluent en parallèle
+à des volumes voisins (8,2 k et 9,6 k) — les deux mesurent en même temps. Sur
+l'objectif Abonnement, `sales` est à plat depuis le 26 mai pendant que quatre
+autres balises montent ; un bandeau nomme la balise éteinte et celles qui
+montent, en disant que la coïncidence demande vérification plutôt qu'en tranchant.
+
+Les actions retirées sont incluses volontairement : sans elles, la balise qu'on
+cherche justement à remplacer disparaîtrait de la comparaison.
 
 ### Le raisonnement
 

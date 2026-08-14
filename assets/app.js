@@ -201,6 +201,8 @@ const S = {
   changelog: null,
   changelogState: 'idle',
   trkDim: 'account',     // account | market
+  trkCat: null,          // objectif comparé (null → le plus volumineux)
+  trkTagScale: 'volume',
   trkGrain: 'week',
   trkScale: 'index',     // base 100 par défaut : c'est la seule échelle qui
                          // permette de lire des clics et un taux ensemble
@@ -4527,6 +4529,8 @@ function writeHash() {
   if (S.trkGrain !== 'week') p.set('tg', S.trkGrain);
   if (S.trkScale !== 'index') p.set('ts', S.trkScale);
   if (S.trkLagScale !== 'share') p.set('tl', S.trkLagScale);
+  if (S.trkCat) p.set('tc', S.trkCat);
+  if (S.trkTagScale !== 'volume') p.set('tt', S.trkTagScale);
   if (S.aimaxMetric !== 'cost') p.set('am', S.aimaxMetric);
   if (S.aimaxSource !== 'all') p.set('as', S.aimaxSource);
   if (S.liveAction !== null) p.set('ac', S.liveAction);
@@ -4571,6 +4575,8 @@ function readHash() {
   if (['day', 'week', 'month'].includes(p.get('tg'))) S.trkGrain = p.get('tg');
   if (['index', 'volume'].includes(p.get('ts'))) S.trkScale = p.get('ts');
   if (['volume', 'share'].includes(p.get('tl'))) S.trkLagScale = p.get('tl');
+  if (p.get('tc')) S.trkCat = p.get('tc');   // validé à l'arrivée des données
+  if (['volume', 'index'].includes(p.get('tt'))) S.trkTagScale = p.get('tt');
 
   if (AIMAX_METRICS[p.get('am')]) S.aimaxMetric = p.get('am');
   // La source est validée à l'arrivée du fichier, seul juge de ce qui existe.
@@ -5827,14 +5833,60 @@ function trkVerdictColor(key) {
   return seriesColor(TRK_VERDICTS[key].slot);
 }
 
-/** Indices de comptes retenus par le filtre du haut ; null = tous. */
+/**
+ * Périmètre de l'onglet : les comptes réellement suivis.
+ *
+ * Le MCC en compte 86, dont une vingtaine actifs — mais un diagnostic de
+ * tracking sur un compte que personne ne surveille produit des alertes que
+ * personne ne traitera, et noie celles qui comptent. La liste est donc explicite
+ * et se modifie ici.
+ *
+ * Deux comptes « Spiice » existent : `gdm_spiice-google-fr` (Recherche) est dans
+ * le périmètre, `gdm_Spiice_App` et `Spiice_Display` n'y sont pas.
+ */
+const TRACKING_SCOPE = [
+  'gdm_spiice-google-fr',
+  'gdm_jacquie_michel_contact_fr',
+  '2lm_jacquie_et_michel_rencontre',
+  'gdm_femme-liberee_homme',
+  'Easyflirt',
+  'JM_SWIPE',
+  'Onlydate_93781',
+  'fr_sexy_1',
+  'fr_love_toprencontreserieuse',
+];
+
+/** Indices, dans tracking.json, des comptes du périmètre. */
+function trackingScope() {
+  const t = S.tracking;
+  if (!t) return new Set();
+  const wanted = new Set(TRACKING_SCOPE);
+  return new Set(t.accounts.map((a, i) => (wanted.has(a.name) ? i : -1)).filter((i) => i >= 0));
+}
+
+/**
+ * Comptes retenus : le périmètre, croisé avec le filtre du haut s'il est posé.
+ *
+ * Renvoie toujours un ensemble — jamais null. Un compte hors périmètre
+ * sélectionné dans la barre donne donc un ensemble vide, et l'onglet le dit au
+ * lieu d'afficher tout le portefeuille.
+ */
 function selectedTrackingAccounts() {
   const t = S.tracking;
-  if (!t || !S.accounts.size) return null;
+  const scope = trackingScope();
+  if (!t || !S.accounts.size) return scope;
   const names = new Set(
     [...S.accounts].map((i) => S.data.accounts[i] && S.data.accounts[i].name)
   );
-  return new Set(t.accounts.map((a, i) => (names.has(a.name) ? i : -1)).filter((i) => i >= 0));
+  return new Set([...scope].filter((i) => names.has(t.accounts[i].name)));
+}
+
+/** Comptes du périmètre absents du jeu de données, s'il y en a. */
+function trackingMissing() {
+  const t = S.tracking;
+  if (!t) return [];
+  const have = new Set(t.accounts.map((a) => a.name));
+  return TRACKING_SCOPE.filter((n) => !have.has(n));
 }
 
 /** Bornes d'index de dates correspondant à la période filtrée. */
@@ -6375,6 +6427,346 @@ function renderTrkSilent(list) {
   });
 }
 
+/* ── Rendu : comparaison des balises d'un même objectif ────────────────────── */
+
+/**
+ * Catégories d'action de conversion, en français.
+ *
+ * Ce sont celles que porte réellement ce MCC ; les autres valeurs de l'énumération
+ * (STORE_VISIT, PHONE_CALL_LEAD…) apparaîtraient telles quelles si elles
+ * surgissaient un jour, plutôt que d'être rangées dans « autre ».
+ */
+const CONV_CATEGORY_FR = {
+  SIGNUP: 'Inscription',
+  SUBSCRIBE_PAID: 'Abonnement payant',
+  PURCHASE: 'Achat',
+  CONTACT: 'Contact',
+  DOWNLOAD: 'Téléchargement',
+  SUBMIT_LEAD_FORM: 'Formulaire',
+  DEFAULT: 'Par défaut',
+  PAGE_VIEW: 'Page vue',
+  ENGAGEMENT: 'Engagement',
+  UNSPECIFIED: 'Non catégorisée',
+  UNKNOWN: 'Non catégorisée',
+};
+
+function trkCategoryLabel(code) {
+  return CONV_CATEGORY_FR[code] || code;
+}
+
+/** Catégories présentes dans les données, ordonnées par volume de conversions. */
+function trkCategories() {
+  const t = S.tracking;
+  if (!t || !t.actionMeta) return [];
+  const allowed = selectedTrackingAccounts();
+  const { lo, hi, ok } = trkWindow();
+  const vol = new Map();
+  if (ok) {
+    for (const r of t.series) {
+      if (r[TS.DATE] < lo || r[TS.DATE] > hi) continue;
+      if (!allowed.has(r[TS.ACC])) continue;
+      const cat = (t.actionMeta[r[TS.ACTION]] || {}).category || 'UNSPECIFIED';
+      vol.set(cat, (vol.get(cat) || 0) + r[TS.ALL]);
+    }
+  }
+  return [...vol.entries()].sort((a, b) => b[1] - a[1]).map(([k]) => k);
+}
+
+/**
+ * Une courbe par balise, à l'intérieur d'un même objectif.
+ *
+ * C'est la carte qui montre une migration : « INSCRIPTION SOI » qui s'éteint
+ * pendant que « INSCRIPTION SOI 2026 (MP>sGTM<Ads) » monte, c'est un
+ * remplacement réussi ; l'ancienne qui tombe sans que la nouvelle prenne le
+ * relais, c'est une perte de mesure. Les deux se ressemblent sur un total, et se
+ * distinguent immédiatement ici.
+ */
+function renderTrkTags() {
+  const t = S.tracking;
+  const allowed = selectedTrackingAccounts();
+  const { lo, hi, ok } = trkWindow();
+  const cats = trkCategories();
+  const cat = S.trkCat && (cats.includes(S.trkCat) || S.trkCat === 'all')
+    ? S.trkCat : (cats[0] || 'all');
+  const share = S.trkTagScale === 'index';
+  const grain = S.trkGrain;
+
+  // Reconstruit à chaque rendu : les objectifs disponibles dépendent de la
+  // période et des comptes filtrés. Un objectif de l'URL absent de la sélection
+  // retombe sur le plus volumineux, plutôt que sur une carte vide.
+  buildSegmented(els.trkTagsCat,
+    [...cats.map((c) => ({ key: c, label: trkCategoryLabel(c) })),
+     { key: 'all', label: 'Toutes' }],
+    () => cat,
+    (k) => { S.trkCat = k; renderTracking(); writeHash(); });
+
+  if (!ok || !cats.length) {
+    els.trkTagsSub.textContent = '';
+    els.trkTagsNote.hidden = true;
+    emptyState(els.trkTagsBody, 'Aucune conversion sur cette sélection.');
+    return;
+  }
+
+  const buckets = new Map();      // actionIdx → Map(clé de période → conversions)
+  const totals = new Map();       // actionIdx → total
+  const lastSeen = new Map();     // actionIdx → dernier jour converti
+  const keys = new Set();
+  for (const r of t.series) {
+    if (r[TS.DATE] < lo || r[TS.DATE] > hi) continue;
+    if (!allowed.has(r[TS.ACC])) continue;
+    const meta = t.actionMeta[r[TS.ACTION]] || {};
+    if (cat !== 'all' && (meta.category || 'UNSPECIFIED') !== cat) continue;
+    const k = grainKey(t.dates[r[TS.DATE]], grain);
+    keys.add(k);
+    let b = buckets.get(r[TS.ACTION]);
+    if (!b) buckets.set(r[TS.ACTION], (b = new Map()));
+    b.set(k, (b.get(k) || 0) + r[TS.ALL]);
+    totals.set(r[TS.ACTION], (totals.get(r[TS.ACTION]) || 0) + r[TS.ALL]);
+    if (r[TS.ALL] > 0 && r[TS.DATE] > (lastSeen.get(r[TS.ACTION]) ?? -1)) {
+      lastSeen.set(r[TS.ACTION], r[TS.DATE]);
+    }
+  }
+
+  const xKeys = [...keys].sort();
+  const ranked = [...totals.entries()].sort((a, b) => b[1] - a[1]);
+  const grand = ranked.reduce((s, [, v]) => s + v, 0);
+
+  els.trkTagsSub.textContent =
+    `${cat === 'all' ? 'Toutes catégories' : trkCategoryLabel(cat)} · `
+    + `${ranked.length} balise(s) · ${fmtNum1(grand)} conversions (toutes actions) · `
+    + `${grain === 'day' ? 'par jour' : grain === 'week' ? 'par semaine' : 'par mois'}`
+    + (share ? ' · base 100 sur la première période de chaque balise' : '');
+
+  // Une balise éteinte pendant qu'une autre monte : c'est le motif qu'on cherche,
+  // il mérite d'être nommé plutôt que laissé à l'œil.
+  els.trkTagsNote.replaceChildren();
+  const dead = ranked.filter(([ai]) => {
+    const last = lastSeen.get(ai);
+    return last !== undefined && hi - last >= TRK_SILENCE_MIN && totals.get(ai) >= TRK_MIN_CONV;
+  });
+  const rising = ranked.filter(([ai]) => {
+    const b = buckets.get(ai) || new Map();
+    const first = b.get(xKeys[0]) || 0;
+    const last = b.get(xKeys[xKeys.length - 1]) || 0;
+    return last > first * 1.5 && last > 0;
+  });
+  if (dead.length) {
+    const strong = document.createElement('strong');
+    strong.textContent = dead.length === 1 ? 'Une balise s\'est tue.' : `${dead.length} balises se sont tues.`;
+    els.trkTagsNote.appendChild(strong);
+    const span = document.createElement('span');
+    span.textContent = dead.map(([ai]) =>
+      `${t.actions[ai]} (dernière conversion le ${fmtDateShort(t.dates[lastSeen.get(ai)])})`).join(' · ')
+      + (rising.length
+        ? `. ${rising.map(([ai]) => t.actions[ai]).join(', ')} monte(nt) sur la même période : `
+          + `à vérifier, un remplacement de balise et une perte de mesure se ressemblent sur un total.`
+        : `. Aucune autre balise de cet objectif ne monte en compensation.`);
+    els.trkTagsNote.appendChild(span);
+    els.trkTagsNote.hidden = false;
+  } else {
+    els.trkTagsNote.hidden = true;
+  }
+
+  if (!ranked.length) {
+    emptyState(els.trkTagsBody, 'Aucune balise sur cet objectif.');
+    return;
+  }
+
+  if (S.views.trktags === 'table') {
+    renderTable(els.trkTagsBody, {
+      scroll: true,
+      caption: 'Conversions par balise',
+      cols: [
+        { key: 'name', label: 'Balise', text: true },
+        { key: 'cat', label: 'Objectif', text: true },
+        { key: 'total', label: 'Conversions', fmt: fmtNum1 },
+        { key: 'share', label: 'Part', fmt: (v) => fmtPct(v) },
+        { key: 'last', label: 'Dernière conversion', text: true },
+        { key: 'counted', label: 'Vue par les enchères', text: true },
+      ],
+      rows: ranked.map(([ai, v], i) => {
+        const meta = t.actionMeta[ai] || {};
+        return {
+          name: t.actions[ai],
+          _swatch: seriesColor(Math.min(i + 1, MAX_ENTITY_SLOTS)),
+          cat: trkCategoryLabel(meta.category || 'UNSPECIFIED'),
+          total: v,
+          share: grand ? v / grand : 0,
+          last: lastSeen.has(ai) ? fmtDateShort(t.dates[lastSeen.get(ai)]) : '—',
+          counted: meta.counted ? 'oui' : 'non',
+        };
+      }),
+      foot: { name: `Total — ${ranked.length} balise(s)`, total: grand, share: 1 },
+    });
+    return;
+  }
+
+  // Au-delà de sept balises les teintes se répètent : la queue est repliée
+  // plutôt que de faire croire à deux balises de même couleur.
+  const shown = ranked.slice(0, MAX_ENTITY_SLOTS);
+  const tail = ranked.slice(MAX_ENTITY_SLOTS);
+  const series = shown.map(([ai], i) => {
+    const b = buckets.get(ai) || new Map();
+    const raw = xKeys.map((k) => b.get(k) || 0);
+    let values = raw;
+    if (share) {
+      const base = raw.find((v) => v > 0);
+      values = base ? raw.map((v) => v / base * 100) : raw;
+    }
+    return {
+      key: String(ai), name: shortenMiddle(t.actions[ai], 42, 0.55),
+      color: seriesColor(i + 1), values,
+    };
+  });
+  if (tail.length) {
+    const merged = xKeys.map((k) =>
+      tail.reduce((s, [ai]) => s + ((buckets.get(ai) || new Map()).get(k) || 0), 0));
+    series.push({
+      key: 'autres', name: `Autres (${tail.length})`, color: seriesColor(FOLD_SLOT),
+      values: share ? (() => {
+        const base = merged.find((v) => v > 0);
+        return base ? merged.map((v) => v / base * 100) : merged;
+      })() : merged,
+    });
+  }
+
+  renderLineChart(els.trkTagsBody, {
+    xLabels: xKeys.map((k) => grainLabel(k, grain)),
+    series,
+    fmt: share ? ((v) => nf0.format(v)) : fmtNum1,
+    endLabel: series.length <= 4,
+    height: 320,
+    summable: !share,
+    ariaLabel: 'Conversions par balise dans le temps',
+  });
+}
+
+/* ── Rendu : diagnostic des imports ────────────────────────────────────────── */
+
+const UPLOAD_STATUS_FR = {
+  EXCELLENT: 'Excellent',
+  GOOD: 'Correct',
+  NEEDS_ATTENTION: 'À corriger',
+  NO_RECENT_UPLOAD: 'Aucun import récent',
+  UNKNOWN: 'Inconnu', UNSPECIFIED: 'Non renseigné',
+};
+
+const UPLOAD_CLIENT_FR = {
+  GOOGLE_ADS_API: 'API Google Ads',
+  GOOGLE_ADS_WEB_CLIENT: 'Interface Google Ads',
+  ADS_DATA_CONNECTOR: 'Ads Data Connector',
+  UNKNOWN: 'Inconnu', UNSPECIFIED: 'Non renseigné',
+};
+
+/**
+ * Motifs de rejet d'import, traduits.
+ *
+ * Le code brut de l'API est conservé entre parenthèses : c'est lui qu'on cherche
+ * dans la documentation ou qu'on cite à un support, et le perdre obligerait à
+ * faire le chemin inverse.
+ */
+const UPLOAD_ERROR_FR = {
+  EXPIRED_EVENT: 'événement trop ancien pour être accepté',
+  TOO_RECENT_EVENT: 'événement trop récent, le clic n\'est pas encore consolidé',
+  EVENT_NOT_FOUND: 'clic introuvable pour cet identifiant',
+  UNPARSEABLE_GCLID: 'identifiant de clic illisible',
+  CONVERSION_PRECEDES_EVENT: 'conversion antérieure au clic',
+  EXPIRED_GCLID: 'identifiant de clic expiré',
+  INVALID_CONVERSION_ACTION: 'action de conversion invalide',
+  DUPLICATE_CLICK_CONVERSION: 'conversion déjà importée',
+};
+
+function uploadErrorLabel(raw) {
+  const code = String(raw || '').split('=').pop().trim();
+  const fr = UPLOAD_ERROR_FR[code];
+  return fr ? `${fr} (${code})` : code || '?';
+}
+
+/**
+ * Le seul diagnostic que l'API expose vraiment — et il ne couvre que les
+ * conversions IMPORTÉES. Ni le Consent Mode ni la modélisation n'y figurent.
+ *
+ * Piège rencontré : la ressource ne répond que sur le compte propriétaire des
+ * conversions. Interrogée sur un compte enfant d'un suivi mutualisé, elle
+ * renvoie zéro ligne sans erreur, ce qui se lit à tort comme « aucun import ».
+ */
+function renderTrkUpload() {
+  const t = S.tracking;
+  const list = t.uploads || [];
+
+  els.trkUploadSub.textContent = list.length
+    ? `${list.length} action(s) alimentée(s) par import · statut, volume et date du dernier `
+      + `envoi, tels que Google Ads les rapporte · portée : conversions importées uniquement`
+    : 'Aucune action alimentée par import sur les comptes propriétaires des conversions';
+
+  els.trkUploadNote.replaceChildren();
+  const bad = list.filter((u) => u.status !== 'EXCELLENT' && u.status !== 'GOOD');
+  const notes = [];
+  if (bad.length) {
+    notes.push(`${bad.length} action(s) au statut « ${bad.map((u) =>
+      UPLOAD_STATUS_FR[u.status] || u.status).join(', ')} ».`);
+  }
+  // Un import « excellent » alors que l'action ne convertit plus : les deux
+  // faits sont vrais et ne se contredisent pas — l'envoi peut réussir sans que
+  // les conversions soient attribuées à ces comptes. À vérifier, pas à conclure.
+  const silentNames = new Set((S.trkSilent || []).map((s) => s.action));
+  const contradictory = list.filter((u) => silentNames.has(u.action));
+  if (contradictory.length) {
+    notes.push(`${contradictory.map((u) => `« ${u.action} »`).join(', ')} : l'import est `
+      + `rapporté comme réussi (dernier envoi le ${fmtDateShort(contradictory[0].last)}), `
+      + `alors que l'action ne produit plus de conversion sur les comptes suivis. Les deux `
+      + `faits peuvent coexister — envoi accepté mais attribué ailleurs — et méritent une `
+      + `vérification dans l'interface.`);
+  }
+  if (notes.length) {
+    const strong = document.createElement('strong');
+    strong.textContent = 'À regarder.';
+    els.trkUploadNote.appendChild(strong);
+    const span = document.createElement('span');
+    span.textContent = notes.join(' ');
+    els.trkUploadNote.appendChild(span);
+    els.trkUploadNote.hidden = false;
+  } else {
+    els.trkUploadNote.hidden = true;
+  }
+
+  if (!list.length) {
+    emptyState(els.trkUploadBody,
+      'Aucun import de conversion rapporté. Cette ressource ne répond que sur le compte '
+      + 'propriétaire des conversions : si le suivi est mutualisé, c\'est lui qu\'il faut '
+      + 'interroger, pas les comptes enfants.');
+    return;
+  }
+
+  renderTable(els.trkUploadBody, {
+    scroll: true,
+    caption: 'Diagnostic des imports de conversions',
+    cols: [
+      { key: 'action', label: 'Action de conversion', text: true },
+      { key: 'status', label: 'Statut', text: true },
+      { key: 'client', label: 'Source', text: true },
+      { key: 'total', label: 'Événements', fmt: fmtInt },
+      { key: 'ok', label: 'Acceptés', fmt: fmtInt },
+      { key: 'rate', label: 'Taux de succès', fmt: (v) => fmtPct(v) },
+      { key: 'last', label: 'Dernier import', text: true },
+      { key: 'alerts', label: 'Alertes', text: true },
+    ],
+    rows: list.map((u) => ({
+      action: u.action,
+      _sub: `compte propriétaire ${u.owner}`,
+      _swatch: trkVerdictColor(
+        u.status === 'EXCELLENT' || u.status === 'GOOD' ? 'stable'
+          : u.status === 'NO_RECENT_UPLOAD' ? 'break' : 'measure'),
+      status: UPLOAD_STATUS_FR[u.status] || u.status,
+      client: UPLOAD_CLIENT_FR[u.client] || u.client,
+      total: u.total, ok: u.ok,
+      rate: u.total ? u.ok / u.total : NaN,
+      last: u.last ? fmtDateShort(u.last) : '—',
+      alerts: (u.alerts || []).map((a) => uploadErrorLabel(a.error)).join(', ') || '—',
+    })),
+  });
+}
+
 /* ── Rendu : conversions face aux clics ────────────────────────────────────── */
 
 function renderTrkTime() {
@@ -6835,11 +7227,35 @@ function renderTracking() {
   const meta = t.meta || {};
 
   const scoped = selectedTrackingAccounts();
-  const nAcc = scoped ? scoped.size : t.accounts.length;
+  const nAcc = scoped.size;
+  const missing = trackingMissing();
   els.trkMeta.textContent =
     `${fmtDateLong(S.start)} – ${fmtDateLong(S.end)} · `
-    + `${nAcc} compte(s) actif(s) sur ${meta.accounts_scanned || t.accounts.length} scannés · `
-    + `données disponibles du ${fmtDateLong(meta.date_start)} au ${fmtDateLong(meta.date_end)}`;
+    + `${nAcc} compte(s) sur les ${TRACKING_SCOPE.length} du périmètre de suivi · `
+    + `données disponibles du ${fmtDateLong(meta.date_start)} au ${fmtDateLong(meta.date_end)}`
+    + (missing.length ? ` · absent(s) du jeu de données : ${missing.join(', ')}` : '');
+
+  // Un compte hors périmètre sélectionné dans la barre du haut donne un onglet
+  // vide : il faut dire pourquoi, sinon le filtre passe pour cassé.
+  if (!nAcc) {
+    const msg = S.accounts.size
+      ? 'Aucun compte sélectionné n\'appartient au périmètre de l\'onglet Tracking. '
+        + `Comptes suivis : ${TRACKING_SCOPE.join(', ')}.`
+      : 'Aucun compte du périmètre de suivi n\'est présent dans data/tracking.json.';
+    els.trkKpi.replaceChildren();
+    for (const el of [els.trkDiagBody, els.trkSilentBody, els.trkTagsBody,
+      els.trkUploadBody, els.trkTimeBody, els.trkLagBody, els.trkLogBody,
+      els.trkConfigBody]) {
+      emptyState(el, msg);
+    }
+    for (const el of [els.trkDiagNote, els.trkTagsNote, els.trkUploadNote,
+      els.trkLogNote]) {
+      el.hidden = true;
+    }
+    els.trkConsentCard.hidden = true;
+    els.trkTimeLegend.textContent = '';
+    return;
+  }
   if (S.view === 'tracking') {
     els.filterStatus.textContent =
       `${fmtDateLong(S.start)} – ${fmtDateLong(S.end)} · ${nAcc} compte(s) · santé de la mesure`;
@@ -6851,6 +7267,8 @@ function renderTracking() {
   renderTrkKpis(rows);
   renderTrkDiag(rows, blocks, folded);
   renderTrkSilent(S.trkSilent);
+  renderTrkTags();
+  renderTrkUpload();
   renderTrkTime();
   renderTrkConsent();
   renderTrkLag();
@@ -6928,6 +7346,15 @@ async function loadTracking() {
   buildSegmented(els.trkLagScale,
     [{ key: 'volume', label: 'Volume' }, { key: 'share', label: 'Base 100' }],
     () => S.trkLagScale, (k) => { S.trkLagScale = k; renderTracking(); writeHash(); });
+
+  // Le sélecteur d'objectifs n'est PAS construit ici : les catégories se
+  // déduisent des conversions de la période filtrée, qui n'est pas encore
+  // résolue à ce stade. Construit ici, il ne contenait que « Toutes » et
+  // ignorait un objectif passé dans l'URL. Il se reconstruit à chaque rendu,
+  // dans renderTrkTags.
+  buildSegmented(els.trkTagsScale,
+    [{ key: 'volume', label: 'Volume' }, { key: 'index', label: 'Base 100' }],
+    () => S.trkTagScale, (k) => { S.trkTagScale = k; renderTracking(); writeHash(); });
 
   buildViewToggles();
   renderTracking();
@@ -7102,6 +7529,10 @@ function cacheEls() {
     trkDiagDim: 'trk-diag-dim', trkDiagSub: 'trk-diag-sub',
     trkDiagNote: 'trk-diag-note', trkDiagBody: 'trk-diag-body',
     trkSilentSub: 'trk-silent-sub', trkSilentBody: 'trk-silent-body',
+    trkTagsCat: 'trk-tags-cat', trkTagsScale: 'trk-tags-scale',
+    trkTagsSub: 'trk-tags-sub', trkTagsNote: 'trk-tags-note', trkTagsBody: 'trk-tags-body',
+    trkUploadSub: 'trk-upload-sub', trkUploadNote: 'trk-upload-note',
+    trkUploadBody: 'trk-upload-body',
     trkTimeGrain: 'trk-time-grain', trkTimeScale: 'trk-time-scale',
     trkTimeSub: 'trk-time-sub', trkTimeBody: 'trk-time-body',
     trkTimeLegend: 'trk-time-legend',

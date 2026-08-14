@@ -88,16 +88,44 @@ Q_CONFIG = """
            customer.conversion_tracking_setting.conversion_tracking_id,
            customer.conversion_tracking_setting.conversion_tracking_status,
            customer.conversion_tracking_setting.cross_account_conversion_tracking_id,
-           customer.conversion_tracking_setting.enhanced_conversions_for_leads_enabled
+           customer.conversion_tracking_setting.enhanced_conversions_for_leads_enabled,
+           customer.conversion_tracking_setting.google_ads_conversion_customer
     FROM customer
 """
 
+# Sans filtre de statut : une action retirée le mois dernier porte quand même la
+# catégorie des conversions qu'elle a produites, et sans elle la comparaison des
+# balises d'un objectif serait amputée de celle qu'on cherche justement à
+# remplacer.
 Q_ACTIONS = """
-    SELECT conversion_action.name, conversion_action.status, conversion_action.type,
+    SELECT conversion_action.id, conversion_action.name, conversion_action.status,
+           conversion_action.type, conversion_action.category, conversion_action.origin,
            conversion_action.primary_for_goal,
            conversion_action.include_in_conversions_metric
     FROM conversion_action
-    WHERE conversion_action.status = 'ENABLED'
+"""
+
+# Diagnostic des imports de conversions.
+#
+# C'est ce que l'API expose de plus proche de l'écran « Diagnostics » de
+# l'interface — pour les conversions IMPORTÉES seulement, pas pour le Consent
+# Mode ni la modélisation, qui n'existent nulle part dans l'API.
+#
+# Piège : la ressource ne répond QUE sur le compte propriétaire des conversions
+# (conversion_tracking_setting.google_ads_conversion_customer). Interrogée sur un
+# compte enfant d'un suivi mutualisé, elle renvoie zéro ligne sans erreur — ce
+# qui se lit à tort comme « aucun import ».
+Q_UPLOAD = """
+    SELECT offline_conversion_upload_conversion_action_summary.conversion_action_id,
+           offline_conversion_upload_conversion_action_summary.conversion_action_name,
+           offline_conversion_upload_conversion_action_summary.client,
+           offline_conversion_upload_conversion_action_summary.status,
+           offline_conversion_upload_conversion_action_summary.total_event_count,
+           offline_conversion_upload_conversion_action_summary.successful_event_count,
+           offline_conversion_upload_conversion_action_summary.pending_event_count,
+           offline_conversion_upload_conversion_action_summary.last_upload_date_time,
+           offline_conversion_upload_conversion_action_summary.alerts
+    FROM offline_conversion_upload_conversion_action_summary
 """
 
 Q_LAG = """
@@ -255,6 +283,8 @@ def main() -> None:
     changes: list[list] = []
     change_authors: dict[int, set] = {}
     geo_daily: dict[tuple, list] = {}             # (date, accIdx, countryId) → metrics
+    action_meta: dict[str, dict] = {}             # nom d'action → catégorie, type…
+    owners: set[str] = set()                      # comptes propriétaires des conversions
     failures: list[tuple[str, str]] = []
 
     for i, account in enumerate(accounts, 1):
@@ -326,25 +356,56 @@ def main() -> None:
             for r in F.ads_search(cfg, token, account["id"], Q_CONFIG):
                 c = r.get("customer") or {}
                 cts = c.get("conversionTrackingSetting") or {}
+                owner = str(cts.get("googleAdsConversionCustomer") or "").rsplit("/", 1)[-1]
+                if owner:
+                    owners.add(owner)
                 cfg_row.update({
                     "autoTagging": bool(c.get("autoTaggingEnabled")),
                     "status": cts.get("conversionTrackingStatus") or "UNKNOWN",
                     "trackingId": str(cts.get("conversionTrackingId") or ""),
                     "crossAccountId": str(cts.get("crossAccountConversionTrackingId") or ""),
                     "enhancedLeads": bool(cts.get("enhancedConversionsForLeadsEnabled")),
+                    "owner": owner,
                 })
         except F.ApiError as exc:
             cfg_row["status"] = f"ERREUR ({exc})"
 
         try:
-            acts = F.ads_search(cfg, token, account["id"], Q_ACTIONS)
-            enabled = [(r.get("conversionAction") or {}) for r in acts]
+            acts = [(r.get("conversionAction") or {})
+                    for r in F.ads_search(cfg, token, account["id"], Q_ACTIONS)]
+            enabled = [a for a in acts if a.get("status") == "ENABLED"]
             cfg_row["actionsEnabled"] = len(enabled)
             cfg_row["actionsPrimary"] = sum(1 for a in enabled if a.get("primaryForGoal"))
             cfg_row["actionsCounted"] = sum(1 for a in enabled
                                             if a.get("includeInConversionsMetric"))
             cfg_row["actionsUpload"] = sum(1 for a in enabled
                                            if (a.get("type") or "").startswith("UPLOAD"))
+            # Catégorie par nom d'action : c'est elle qui permet de comparer les
+            # balises d'un même objectif (inscription, abonnement). Les actions
+            # mutualisées portent le même nom dans plusieurs comptes ; le premier
+            # statut ENABLED rencontré fait foi, et les divergences sont comptées
+            # plutôt que masquées.
+            for a in acts:
+                name = a.get("name")
+                if not name:
+                    continue
+                meta = action_meta.setdefault(name, {
+                    "category": None, "type": None, "origin": None,
+                    "primary": False, "counted": False, "enabled": False,
+                    "conflicts": 0,
+                })
+                cat = a.get("category") or "UNSPECIFIED"
+                if meta["category"] and meta["category"] != cat:
+                    meta["conflicts"] += 1
+                if not meta["category"] or a.get("status") == "ENABLED":
+                    meta["category"] = cat
+                    meta["type"] = a.get("type") or ""
+                    meta["origin"] = a.get("origin") or ""
+                if a.get("status") == "ENABLED":
+                    meta["enabled"] = True
+                    meta["primary"] = meta["primary"] or bool(a.get("primaryForGoal"))
+                    meta["counted"] = meta["counted"] or bool(
+                        a.get("includeInConversionsMetric"))
         except F.ApiError:
             cfg_row["actionsEnabled"] = None
         configs.append(cfg_row)
@@ -415,6 +476,42 @@ def main() -> None:
 
     if not daily:
         F.die("Aucune donnée quotidienne récupérée.")
+
+    # ── Diagnostic des imports de conversions ─────────────────────────────────
+    # Sur le compte propriétaire uniquement : ailleurs la ressource répond zéro
+    # ligne sans erreur.
+    uploads: list[dict] = []
+    print(f"\nDiagnostic des imports sur {len(owners)} compte(s) propriétaire(s)…")
+    for owner in sorted(owners):
+        try:
+            rows = F.ads_search(cfg, token, owner, Q_UPLOAD)
+        except F.ApiError as exc:
+            print(f"  {owner} : refusé ({exc})")
+            continue
+        for r in rows:
+            s = r.get("offlineConversionUploadConversionActionSummary") or {}
+            alerts = []
+            for a in (s.get("alerts") or []):
+                # La forme exacte du message varie ; on garde ce qui est lisible
+                # plutôt que de supposer une clé.
+                if isinstance(a, dict):
+                    err = a.get("error") or a.get("errorCode") or {}
+                    label = (err if isinstance(err, str)
+                             else ", ".join(f"{k}={v}" for k, v in err.items()))
+                    alerts.append({"error": label or "?",
+                                   "rate": a.get("errorPercentage")})
+            uploads.append({
+                "owner": F.fmt_cid(owner),
+                "action": s.get("conversionActionName") or "?",
+                "client": s.get("client") or "UNKNOWN",
+                "status": s.get("status") or "UNKNOWN",
+                "total": F.to_int(s.get("totalEventCount")),
+                "ok": F.to_int(s.get("successfulEventCount")),
+                "pending": F.to_int(s.get("pendingEventCount")),
+                "last": str(s.get("lastUploadDateTime") or "")[:10],
+                "alerts": alerts,
+            })
+        print(f"  {F.fmt_cid(owner)} : {len(rows)} action(s) importée(s)")
 
     # ── Résolution des marchés ────────────────────────────────────────────────
     print(f"\nRésolution de {len(geo_ids)} cible(s) géographique(s)…")
@@ -492,6 +589,10 @@ def main() -> None:
         },
         "accounts": acc_idx.values,
         "actions": action_idx.values,
+        # Aligné sur « actions » : même index, métadonnées de l'action.
+        "actionMeta": [action_meta.get(n, {"category": "UNSPECIFIED"})
+                       for n in action_idx.values],
+        "uploads": uploads,
         "dates": dates,
         "months": months,
         "lagGroups": [g[0] for g in LAG_GROUPS],
@@ -523,7 +624,17 @@ def main() -> None:
           f"de conversion · {len(dates)} jour(s)")
     print(f"  quotidien {len(payload['daily'])} · séries {len(payload['series'])} · "
           f"marchés {len(payload['market'])} · retard {len(payload['lag'])} · "
-          f"changements {len(payload['changes'])}")
+          f"changements {len(payload['changes'])} · imports {len(uploads)}")
+    cats: dict[str, int] = {}
+    for m in payload["actionMeta"]:
+        c = m.get("category") or "UNSPECIFIED"
+        cats[c] = cats.get(c, 0) + 1
+    print("  catégories d'action : "
+          + ", ".join(f"{k}×{v}" for k, v in sorted(cats.items(), key=lambda x: -x[1])))
+    for u in uploads:
+        flag = "" if u["status"] in ("EXCELLENT", "GOOD") else "  ⚠"
+        print(f"  import {u['action'][:44]:<46} {u['status']:<16} "
+              f"{u['ok']}/{u['total']} dernier {u['last']}{flag}")
     print(f"  marchés vus : {', '.join(market_idx.values) or '—'}")
     if unmapped_cost:
         print(f"  {unmapped_cost:,.0f} {currency} sans marché résolu (campagnes sans "
