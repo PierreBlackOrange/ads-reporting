@@ -198,13 +198,9 @@ const S = {
   mixHidden: new Set(),
   gender: null,
   genderState: 'idle',   // idle | loading | ready | error
-  genderMetric: 'cost',
-  genderGrain: 'week',
-  genderScale: 'volume',
-  genderAccScale: 'share',
-  genderDevScale: 'share',
-  genderEffMetric: 'roas',
-  autoLoadGender: false,
+  // Base 100 par défaut : la question posée à cette carte est « quelle est la
+  // composition », pas « qui dépense » — le reste du rapport répond déjà à ça.
+  genderScale: 'share',
 
   aimax: null,
   aimaxState: 'idle',    // idle | loading | ready | error
@@ -4492,18 +4488,7 @@ function writeHash() {
   if (S.topMetric !== 'cost') p.set('t', S.topMetric);
   if (S.mixDim !== 'device') p.set('x', S.mixDim);
   if (S.marginMeasure !== 'margin') p.set('mg', S.marginMeasure);
-  // Réglages de l'onglet Sexes, écrits seulement quand il a été ouvert : sans
-  // ce garde, un lien partagé depuis le rapport ferait charger 2 Mo au
-  // destinataire pour un onglet qu'il n'a pas demandé.
-  if (S.genderState === 'ready') {
-    p.set('sx', '1');
-    if (S.genderMetric !== 'cost') p.set('gm', S.genderMetric);
-    if (S.genderGrain !== 'week') p.set('gg', S.genderGrain);
-    if (S.genderScale !== 'volume') p.set('gs', S.genderScale);
-    if (S.genderAccScale !== 'share') p.set('ga', S.genderAccScale);
-    if (S.genderDevScale !== 'share') p.set('gd', S.genderDevScale);
-    if (S.genderEffMetric !== 'roas') p.set('ge', S.genderEffMetric);
-  }
+  if (S.genderScale !== 'share') p.set('gs', S.genderScale);
   if (S.aimaxMetric !== 'cost') p.set('am', S.aimaxMetric);
   if (S.aimaxSource !== 'all') p.set('as', S.aimaxSource);
   if (S.liveAction !== null) p.set('ac', S.liveAction);
@@ -4527,7 +4512,9 @@ function readHash() {
   const p = new URLSearchParams(raw);
   const nums = (v) => new Set((v || '').split(',').filter((s) => s !== '').map(Number).filter(Number.isInteger));
 
-  if (['report', 'live', 'gender'].includes(p.get('vue'))) S.view = p.get('vue');
+  // « gender » a existé comme troisième onglet : un ancien lien retombe sur le
+  // rapport, où la répartition par sexe vit désormais.
+  if (['report', 'live'].includes(p.get('vue'))) S.view = p.get('vue');
   const r = p.get('r');
   if (r) S.range = r;
   if (p.get('s')) S.start = p.get('s');
@@ -4541,15 +4528,7 @@ function readHash() {
   if (['account', 'total'].includes(p.get('v'))) S.tsMode = p.get('v');
   if (METRICS[p.get('t')]) S.topMetric = p.get('t');
   if (['device', 'device100', 'network'].includes(p.get('x'))) S.mixDim = p.get('x');
-  if (GENDER_METRICS[p.get('gm')]) S.genderMetric = p.get('gm');
-  if (['day', 'week', 'month'].includes(p.get('gg'))) S.genderGrain = p.get('gg');
   if (['volume', 'share'].includes(p.get('gs'))) S.genderScale = p.get('gs');
-  if (['volume', 'share'].includes(p.get('ga'))) S.genderAccScale = p.get('ga');
-  if (['volume', 'share'].includes(p.get('gd'))) S.genderDevScale = p.get('gd');
-  if (GENDER_EFF[p.get('ge')]) S.genderEffMetric = p.get('ge');
-  // Chargement différé : le jeu par sexe pèse 2 Mo, il n'arrive que si le lien
-  // le réclame ou si l'onglet est ouvert.
-  S.autoLoadGender = p.get('sx') === '1';
 
   if (AIMAX_METRICS[p.get('am')]) S.aimaxMetric = p.get('am');
   // La source est validée à l'arrivée du fichier, seul juge de ce qui existe.
@@ -4584,8 +4563,6 @@ function onFilterChange() {
   // Le filtre de comptes vaut sur les deux vues : le Live doit se redessiner
   // même quand on le change depuis le rapport.
   if (S.liveState === 'ready') renderLive();
-  if (S.genderState === 'ready') renderGenderSection();
-  if (S.view === 'gender') { updateFilterSummaries(); writeHash(); return; }
   if (S.view === 'live') {
     // Le rapport ne se redessine pas ici : c'est lui qui écrit l'URL d'ordinaire.
     updateFilterSummaries();
@@ -4633,7 +4610,7 @@ function doRender() {
   renderEfficiency(rows);
   renderTop(rows);
   renderMargin(rows);
-  if (S.genderState === 'ready') renderGenderSection();
+  renderGenderSection();
   renderAimaxSection();
   renderMix(sel);
   renderDetail(rows, sel);
@@ -5460,26 +5437,28 @@ function updateLiveAutoRefresh() {
 }
 
 /* ════════════════════════════════════════════════════════════════════════════
-   Onglet Sexes
+   Répartition du coût par sexe — une carte du rapport
 
-   Jeu de données distinct (data/gender.json), au grain
-   (date × campagne × sexe × appareil), chargé à la demande.
+   Jeu de données distinct (data/gender.json), au grain (jour × compte × sexe).
+   Il suit la période et le filtre de comptes de la barre du haut, comme le
+   reste du rapport. Chargé sans bouton : à ce grain il pèse une fraction de
+   data.json, et la section se masque d'elle-même si le fichier n'existe pas.
 
    Ce que « sexe » veut dire ici, et pourquoi « Inconnu » reste au premier plan.
 
    La donnée vient de `gender_view`. MALE et FEMALE sont ce que Google a déduit
    de l'internaute ; UNDETERMINED est l'aveu qu'il n'a pas su trancher. Sur ce
    MCC cette catégorie porte 40 % du coût — la ranger dans un « autres » la
-   ferait passer pour un résidu, alors qu'elle pèse cinq fois les femmes. Elle a
-   donc sa place, sa couleur et sa ligne partout.
+   ferait passer pour un résidu, alors qu'elle pèse dix fois les femmes. Elle
+   garde donc sa teinte, sa colonne, et une mention explicite sous la carte.
 
    Vérifié avant de construire : sur les trois comptes les plus dépensiers, la
    somme des coûts par sexe égale à 100 % le coût total des campagnes. Aucun
-   angle mort à signaler.
+   angle mort de couverture à signaler.
    ═══════════════════════════════════════════════════════════════════════════ */
 
-/* Colonnes de facts : [date, campagne, sexe, appareil, impr, clics, coût, conv, valeur] */
-const G = { DATE: 0, CAMP: 1, GENDER: 2, DEV: 3, IMPR: 4, CLICKS: 5, COST: 6, CONV: 7, VALUE: 8 };
+/* Colonnes de facts : [date, compte, sexe, impr, clics, coût, conv, valeur] */
+const G = { DATE: 0, ACC: 1, GENDER: 2, IMPR: 3, CLICKS: 4, COST: 5, CONV: 6, VALUE: 7 };
 
 /**
  * Teintes fixes, jamais dérivées du volume.
@@ -5489,21 +5468,12 @@ const G = { DATE: 0, CAMP: 1, GENDER: 2, DEV: 3, IMPR: 4, CLICKS: 5, COST: 6, CO
  */
 const GENDER_SLOT = { MALE: 1, FEMALE: 5, UNDETERMINED: 4 };
 
-const GENDER_METRICS = {
-  cost:     { label: 'Coût',            calc: (t) => t.cost,   fmt: fmtMoney, sum: true },
-  clicks:   { label: 'Clics',           calc: (t) => t.clicks, fmt: fmtInt,   sum: true },
-  impr:     { label: 'Impressions',     calc: (t) => t.impr,   fmt: fmtInt,   sum: true },
-  conv:     { label: 'Conversions',     calc: (t) => t.conv,   fmt: fmtNum1,  sum: true },
-  value:    { label: 'Valeur de conv.', calc: (t) => t.value,  fmt: fmtMoney, sum: true },
-};
+/* Comptes tracés, du plus dépensier au moins. Le tableau reste exhaustif. */
+const GENDER_MAX = 8;
 
-const GENDER_EFF = {
-  cpa:      { label: 'CPA',           calc: (t) => (t.conv ? t.cost / t.conv : NaN),     fmt: fmtMoney, dir: -1 },
-  roas:     { label: 'ROAS',          calc: (t) => (t.cost ? t.value / t.cost : NaN),    fmt: fmtRatio, dir: 1 },
-  convRate: { label: 'Taux de conv.', calc: (t) => (t.clicks ? t.conv / t.clicks : NaN), fmt: fmtPct,   dir: 1 },
-  cpc:      { label: 'CPC moyen',     calc: (t) => (t.clicks ? t.cost / t.clicks : NaN), fmt: fmtMoney, dir: -1 },
-  ctr:      { label: 'CTR',           calc: (t) => (t.impr ? t.clicks / t.impr : NaN),   fmt: fmtPct,   dir: 1 },
-};
+/* Sous ce seuil, la mention « Inconnu » n'apparaît pas : elle ne servirait plus
+   qu'à répéter ce que la barre montre déjà. */
+const GENDER_NOTE_MIN = 0.05;
 
 const emptyG = () => ({ impr: 0, clicks: 0, cost: 0, conv: 0, value: 0 });
 
@@ -5516,7 +5486,13 @@ function addG(t, f) {
   return t;
 }
 
-/** Indices de comptes retenus par le filtre du haut ; null = tous. */
+/**
+ * Indices de comptes retenus par le filtre du haut ; null = tous.
+ *
+ * L'appariement se fait par nom : gender.json a sa propre liste de comptes,
+ * qui ne couvre que ceux ayant du volume démographique, donc pas les mêmes
+ * indices que data.json.
+ */
 function selectedGenderAccounts() {
   const g = S.gender;
   if (!g || !S.accounts.size) return null;
@@ -5529,9 +5505,9 @@ function selectedGenderAccounts() {
 /**
  * Lignes retenues par les filtres de la barre du haut.
  *
- * La période vient du filtre partagé : cet onglet n'a pas son propre sélecteur,
- * pour qu'on ne puisse pas comparer par erreur un rapport sur 30 jours et une
- * répartition par sexe sur 180.
+ * La période vient du filtre partagé : cette carte n'a pas son propre
+ * sélecteur, pour qu'on ne puisse pas lire une répartition sur 180 jours à
+ * côté d'un rapport sur 30.
  */
 function genderRows() {
   const g = S.gender;
@@ -5546,16 +5522,9 @@ function genderRows() {
   const out = [];
   for (const f of g.facts) {
     if (f[G.DATE] < lo || f[G.DATE] > hi) continue;
-    if (allowed && !allowed.has(g.campaigns[f[G.CAMP]].account)) continue;
+    if (allowed && !allowed.has(f[G.ACC])) continue;
     out.push(f);
   }
-  return out;
-}
-
-/** Totaux par sexe, sur les lignes retenues. */
-function genderTotals(rows) {
-  const out = S.gender.genders.map(() => emptyG());
-  for (const f of rows) addG(out[f[G.GENDER]], f);
   return out;
 }
 
@@ -5567,144 +5536,17 @@ function genderColor(i) {
   return seriesColor(GENDER_SLOT[S.gender.genders[i]] || (i + 1));
 }
 
-function genderScopeLabel() {
-  const a = selectedGenderAccounts();
-  return a ? `${a.size} compte(s) sur ${S.gender.accounts.length}`
-           : `${S.gender.accounts.length} comptes`;
-}
-
-/* ── Indicateurs ───────────────────────────────────────────────────────────── */
-
-function renderGenderKpis(rows) {
-  const totals = genderTotals(rows);
-  const grand = totals.reduce((s, t) => s + t.cost, 0);
-
-  els.genderKpi.replaceChildren();
-  S.gender.genders.forEach((_, i) => {
-    const t = totals[i];
-    const tile = document.createElement('div');
-    tile.className = 'kpi';
-
-    const lab = document.createElement('div');
-    lab.className = 'kpi__label';
-    lab.textContent = genderLabel(i);
-    tile.appendChild(lab);
-
-    const val = document.createElement('div');
-    val.className = 'kpi__value';
-    val.textContent = compactly(fmtMoney, t.cost);
-    tile.appendChild(val);
-
-    const foot = document.createElement('div');
-    foot.className = 'kpi__foot';
-    const d = document.createElement('span');
-    d.className = 'kpi__delta kpi__delta--flat';
-    d.textContent = `${fmtPct(grand ? t.cost / grand : NaN)} du coût`;
-    foot.appendChild(d);
-    tile.appendChild(foot);
-
-    const note = document.createElement('div');
-    note.className = 'kpi__note';
-    note.textContent = `${fmtInt(t.clicks)} clics · ${fmtNum1(t.conv)} conv. · `
-      + `CPA ${fmtMoney(t.conv ? t.cost / t.conv : NaN)} · `
-      + `ROAS ${fmtRatio(t.cost ? t.value / t.cost : NaN)}`;
-    tile.appendChild(note);
-
-    els.genderKpi.appendChild(tile);
-  });
-}
-
-/* ── Évolution ─────────────────────────────────────────────────────────────── */
-
-function renderGenderTime(rows) {
+function renderGenderSection() {
+  if (S.genderState !== 'ready') return;
   const g = S.gender;
-  const m = GENDER_METRICS[S.genderMetric];
   const share = S.genderScale === 'share';
-
-  // Regroupement temporel à partir des dates de CE jeu de données, qui ne
-  // couvrent pas forcément la même étendue que data.json. La clé et le libellé
-  // viennent des mêmes fonctions que le rapport : deux onglets qui nommeraient
-  // les semaines différemment seraient impossibles à rapprocher.
-  const grain = S.genderGrain;
-  const keyOf = (di) => grainKey(g.dates[di], grain);
-
-  const buckets = new Map();
-  for (const f of rows) {
-    const k = keyOf(f[G.DATE]);
-    let slot = buckets.get(k);
-    if (!slot) buckets.set(k, (slot = g.genders.map(() => emptyG())));
-    addG(slot[f[G.GENDER]], f);
-  }
-
-  const keys = [...buckets.keys()].sort();
-  if (!keys.length) {
-    els.genderTimeSub.textContent = '';
-    emptyState(els.genderTimeBody, 'Aucune donnée sur cette sélection.');
-    return;
-  }
-
-  const series = g.genders.map((_, i) => ({
-    key: String(i),
-    name: genderLabel(i),
-    color: genderColor(i),
-    values: keys.map((k) => {
-      const slot = buckets.get(k);
-      const v = m.calc(slot[i]);
-      if (!share) return v;
-      const total = slot.reduce((s, t) => s + m.calc(t), 0);
-      return total ? v / total * 100 : 0;
-    }),
-  }));
-
-  els.genderTimeSub.textContent =
-    `${m.label} · ${grain === 'day' ? 'par jour' : grain === 'week' ? 'par semaine' : 'par mois'}`
-    + (share ? ' · part de chaque sexe, ramenée à 100 % par période' : '')
-    + ` · ${genderScopeLabel()}`;
-
-  if (S.views.gendertime === 'table') {
-    renderTable(els.genderTimeBody, {
-      scroll: true,
-      caption: `${m.label} par sexe et par période`,
-      cols: [
-        { key: 'k', label: grain === 'month' ? 'Mois' : grain === 'week' ? 'Semaine' : 'Jour', text: true },
-        ...g.genders.map((_, i) => ({
-          key: String(i),
-          label: genderLabel(i),
-          fmt: share ? ((v) => `${nf1.format(v)} %`) : ((v) => m.fmt(v)),
-        })),
-      ],
-      rows: keys.map((k, ki) => {
-        const row = { k: grainLabel(k, grain) };
-        series.forEach((s, i) => { row[String(i)] = s.values[ki]; });
-        return row;
-      }),
-    });
-    return;
-  }
-
-  renderLineChart(els.genderTimeBody, {
-    xLabels: keys.map((k) => grainLabel(k, grain)),
-    series,
-    fmt: share ? ((v) => `${nf1.format(v)} %`) : m.fmt,
-    endLabel: true,
-    height: 300,
-    // Additionner des parts n'a pas de sens ; additionner des volumes, oui.
-    summable: !share,
-    ariaLabel: `${m.label} par sexe dans le temps`,
-  });
-}
-
-/* ── Répartition par compte ────────────────────────────────────────────────── */
-
-function renderGenderByAccount(rows) {
-  const g = S.gender;
-  const share = S.genderAccScale === 'share';
+  const rows = genderRows();
+  els.genderSection.hidden = false;
 
   const perAccount = new Map();
   for (const f of rows) {
-    const ai = g.campaigns[f[G.CAMP]].account;
-    let slot = perAccount.get(ai);
-    if (!slot) perAccount.set(ai, (slot = g.genders.map(() => emptyG())));
+    let slot = perAccount.get(f[G.ACC]);
+    if (!slot) perAccount.set(f[G.ACC], (slot = g.genders.map(() => emptyG())));
     addG(slot[f[G.GENDER]], f);
   }
 
@@ -5713,17 +5555,56 @@ function renderGenderByAccount(rows) {
       const values = {};
       let total = 0;
       slots.forEach((t, i) => { values[String(i)] = t.cost; total += t.cost; });
-      return { label: g.accounts[ai].name, values, total };
+      return { label: g.accounts[ai].name, values, total, slots };
     })
     .filter((r) => r.total > 0)
     .sort((a, b) => b.total - a.total);
 
-  els.genderAccSub.textContent = share
-    ? `Composition du coût par sexe, chaque compte ramené à 100 % · ${genderScopeLabel()}`
-    : `Coût par compte, ventilé par sexe · ${genderScopeLabel()}`;
+  const grand = all.reduce((s, r) => s + r.total, 0);
+  const shown = all.slice(0, GENDER_MAX);
+  const covered = shown.reduce((s, r) => s + r.total, 0);
+
+  // Le plafond ne vaut que pour le graphique : le tableau liste tout, et lui
+  // annoncer une troncature qu'il n'applique pas serait faux.
+  const asTable = S.views.gender === 'table';
+  const bits = [share
+    ? 'Composition du coût par sexe, chaque compte ramené à 100 %'
+    : 'Coût par compte, ventilé par sexe'];
+  if (asTable || all.length <= GENDER_MAX) {
+    if (all.length) bits.push(`${all.length} compte(s)`);
+  } else {
+    // Aucun plafond muet : ce que le graphique laisse de côté est annoncé, et
+    // la vue tableau le rattrape.
+    bits.push(`${GENDER_MAX} plus gros comptes sur ${all.length}`);
+    bits.push(`${fmtPct(grand ? covered / grand : NaN)} du coût de la sélection`);
+  }
+  els.genderSub.textContent = bits.join(' · ');
+
+  // Part de l'indéterminé sur la sélection, recalculée à chaque filtre : sur un
+  // seul compte elle peut passer de 40 % à 0.
+  const undet = g.genders.indexOf('UNDETERMINED');
+  let undetShare = NaN;
+  if (undet >= 0 && grand) {
+    undetShare = all.reduce((s, r) => s + (r.values[String(undet)] || 0), 0) / grand;
+  }
+  els.genderNote.replaceChildren();
+  if (undetShare >= GENDER_NOTE_MIN) {
+    const strong = document.createElement('strong');
+    strong.textContent = `« Inconnu » : ${fmtPct(undetShare)} du coût.`;
+    els.genderNote.appendChild(strong);
+    const span = document.createElement('span');
+    span.textContent = "Ce n'est pas une troisième catégorie de personnes, mais l'aveu que "
+      + 'Google n\'a pas su déterminer le sexe. Un CPA « Hommes » ne se compare donc pas à un '
+      + 'CPA global. Réduire ce bloc passe par le ciblage démographique des campagnes, pas par '
+      + 'ce rapport.';
+    els.genderNote.appendChild(span);
+    els.genderNote.hidden = false;
+  } else {
+    els.genderNote.hidden = true;
+  }
 
   if (!all.length) {
-    emptyState(els.genderAccBody, 'Aucune dépense sur cette sélection.');
+    emptyState(els.genderBody, 'Aucune dépense par sexe sur cette sélection.');
     return;
   }
 
@@ -5731,8 +5612,8 @@ function renderGenderByAccount(rows) {
     key: String(i), name: genderLabel(i), color: genderColor(i),
   }));
 
-  if (S.views.genderacc === 'table') {
-    renderTable(els.genderAccBody, {
+  if (S.views.gender === 'table') {
+    renderTable(els.genderBody, {
       scroll: true,
       caption: 'Coût par compte et par sexe',
       cols: [
@@ -5742,9 +5623,13 @@ function renderGenderByAccount(rows) {
           fmt: share ? ((v) => fmtPct(v || 0)) : ((v) => fmtMoney(v || 0)),
         })),
         { key: 'total', label: share ? 'Dépense' : 'Total', fmt: (v) => fmtMoney(v) },
+        { key: 'conv', label: 'Conv.', fmt: fmtNum1 },
+        { key: 'roas', label: 'ROAS', fmt: fmtRatio },
       ],
       rows: all.map((r) => {
-        const out = { label: r.label, total: r.total };
+        const conv = r.slots.reduce((s, t) => s + t.conv, 0);
+        const value = r.slots.reduce((s, t) => s + t.value, 0);
+        const out = { label: r.label, total: r.total, conv, roas: r.total ? value / r.total : NaN };
         for (const s of series) {
           const v = r.values[s.key] || 0;
           out[s.key] = share ? (r.total ? v / r.total : 0) : v;
@@ -5752,11 +5637,15 @@ function renderGenderByAccount(rows) {
         return out;
       }),
       foot: (() => {
-        const tot = all.reduce((a, r) => a + r.total, 0);
-        const f = { label: 'Total', total: tot };
+        const conv = all.reduce((a, r) => a + r.slots.reduce((s, t) => s + t.conv, 0), 0);
+        const value = all.reduce((a, r) => a + r.slots.reduce((s, t) => s + t.value, 0), 0);
+        const f = {
+          label: `Total — ${all.length} compte(s)`,
+          total: grand, conv, roas: grand ? value / grand : NaN,
+        };
         for (const s of series) {
           const sum = all.reduce((a, r) => a + (r.values[s.key] || 0), 0);
-          f[s.key] = share ? (tot ? sum / tot : 0) : sum;
+          f[s.key] = share ? (grand ? sum / grand : 0) : sum;
         }
         return f;
       })(),
@@ -5764,329 +5653,40 @@ function renderGenderByAccount(rows) {
     return;
   }
 
-  // Plafond de lignes pour le graphique ; le tableau reste exhaustif.
-  const MAX = 12;
-  let shown = all;
-  if (all.length > MAX) {
-    const tail = all.slice(MAX);
-    const merged = { label: `Autres (${tail.length} comptes)`, values: {}, total: 0 };
-    for (const r of tail) {
-      for (const k in r.values) merged.values[k] = (merged.values[k] || 0) + r.values[k];
-      merged.total += r.total;
-    }
-    shown = [...all.slice(0, MAX), merged];
-    els.genderAccSub.textContent += ` · ${MAX} premiers sur ${all.length}`;
-  }
-
-  renderStackedBars(els.genderAccBody, {
+  renderStackedBars(els.genderBody, {
     rows: shown, series, fmt: fmtMoney, normalize: share,
     ariaLabel: 'Coût par compte ventilé par sexe',
   });
 }
 
-/* ── Efficacité ────────────────────────────────────────────────────────────── */
-
-function renderGenderEfficiency(rows) {
-  const g = S.gender;
-  const m = GENDER_EFF[S.genderEffMetric];
-  const totals = genderTotals(rows);
-
-  const items = g.genders
-    .map((_, i) => ({ i, t: totals[i], v: m.calc(totals[i]) }))
-    .filter((r) => r.t.cost > 0 || r.t.clicks > 0);
-
-  els.genderEffSub.textContent =
-    `${m.label} par sexe, recalculé sur les totaux agrégés · ${genderScopeLabel()}`;
-
-  if (!items.length || items.every((r) => !isFinite(r.v))) {
-    emptyState(els.genderEffBody, `${m.label} non calculable sur cette sélection.`);
-    return;
-  }
-
-  if (S.views.gendereff === 'table') {
-    renderTable(els.genderEffBody, {
-      caption: `Indicateurs par sexe`,
-      cols: [
-        { key: 'name', label: 'Sexe', text: true },
-        { key: 'cost', label: 'Coût', fmt: (v) => fmtMoney(v) },
-        { key: 'clicks', label: 'Clics', fmt: (v) => fmtInt(v) },
-        { key: 'conv', label: 'Conv.', fmt: fmtNum1 },
-        { key: 'cpa', label: 'CPA', fmt: (v) => fmtMoney(v) },
-        { key: 'roas', label: 'ROAS', fmt: fmtRatio },
-        { key: 'convRate', label: 'Taux conv.', fmt: fmtPct },
-      ],
-      rows: items.map((r) => ({
-        name: genderLabel(r.i),
-        cost: r.t.cost, clicks: r.t.clicks, conv: r.t.conv,
-        cpa: GENDER_EFF.cpa.calc(r.t),
-        roas: GENDER_EFF.roas.calc(r.t),
-        convRate: GENDER_EFF.convRate.calc(r.t),
-      })),
-    });
-    return;
-  }
-
-  renderBarChart(els.genderEffBody, {
-    items: items.filter((r) => isFinite(r.v)).map((r) => ({
-      label: genderLabel(r.i),
-      value: r.v,
-      color: genderColor(r.i),
-      rows: [
-        { name: m.label, value: m.fmt(r.v) },
-        { name: 'Coût', value: fmtMoney(r.t.cost) },
-        { name: 'Clics', value: fmtInt(r.t.clicks) },
-        { name: 'Conversions', value: fmtNum1(r.t.conv) },
-      ],
-    })),
-    fmt: m.fmt, color: seriesColor(1), metricLabel: m.label,
-    refLine: S.genderEffMetric === 'roas' ? { value: 1, label: 'seuil de rentabilité' } : null,
-    ariaLabel: `${m.label} par sexe`,
-  });
-}
-
-/* ── Sexe par appareil ─────────────────────────────────────────────────────── */
-
-function renderGenderByDevice(rows) {
-  const g = S.gender;
-  const share = S.genderDevScale === 'share';
-
-  const perDevice = new Map();
-  for (const f of rows) {
-    let slot = perDevice.get(f[G.DEV]);
-    if (!slot) perDevice.set(f[G.DEV], (slot = g.genders.map(() => emptyG())));
-    addG(slot[f[G.GENDER]], f);
-  }
-
-  const all = [...perDevice.entries()]
-    .map(([di, slots]) => {
-      const values = {};
-      let total = 0;
-      slots.forEach((t, i) => { values[String(i)] = t.cost; total += t.cost; });
-      return { label: label(DEVICE_LABELS, g.devices[di]), values, total };
-    })
-    .filter((r) => r.total > 0)
-    .sort((a, b) => b.total - a.total);
-
-  els.genderDevSub.textContent = share
-    ? `Composition du coût par sexe, chaque appareil ramené à 100 % · ${genderScopeLabel()}`
-    : `Coût par appareil, ventilé par sexe · ${genderScopeLabel()}`;
-
-  if (!all.length) {
-    emptyState(els.genderDevBody, 'Aucune dépense sur cette sélection.');
-    return;
-  }
-
-  const series = g.genders.map((_, i) => ({
-    key: String(i), name: genderLabel(i), color: genderColor(i),
-  }));
-
-  if (S.views.genderdev === 'table') {
-    renderTable(els.genderDevBody, {
-      caption: 'Coût par appareil et par sexe',
-      cols: [
-        { key: 'label', label: 'Appareil', text: true },
-        ...series.map((s) => ({
-          key: s.key, label: s.name,
-          fmt: share ? ((v) => fmtPct(v || 0)) : ((v) => fmtMoney(v || 0)),
-        })),
-        { key: 'total', label: share ? 'Dépense' : 'Total', fmt: (v) => fmtMoney(v) },
-      ],
-      rows: all.map((r) => {
-        const out = { label: r.label, total: r.total };
-        for (const s of series) {
-          const v = r.values[s.key] || 0;
-          out[s.key] = share ? (r.total ? v / r.total : 0) : v;
-        }
-        return out;
-      }),
-    });
-    return;
-  }
-
-  renderStackedBars(els.genderDevBody, {
-    rows: all, series, fmt: fmtMoney, normalize: share,
-    ariaLabel: 'Coût par appareil ventilé par sexe',
-  });
-}
-
-/* ── Détail par campagne ───────────────────────────────────────────────────── */
-
-function renderGenderCampaigns(rows) {
-  const g = S.gender;
-
-  const perCamp = new Map();
-  for (const f of rows) {
-    let slot = perCamp.get(f[G.CAMP]);
-    if (!slot) perCamp.set(f[G.CAMP], (slot = g.genders.map(() => emptyG())));
-    addG(slot[f[G.GENDER]], f);
-  }
-
-  const list = [...perCamp.entries()].map(([ci, slots]) => {
-    const c = g.campaigns[ci];
-    const tot = emptyG();
-    for (const t of slots) {
-      tot.impr += t.impr; tot.clicks += t.clicks; tot.cost += t.cost;
-      tot.conv += t.conv; tot.value += t.value;
-    }
-    const row = {
-      name: c.name,
-      _sub: g.accounts[c.account].name,
-      _swatch: genderColor(slots.reduce((best, t, i) =>
-        (t.cost > slots[best].cost ? i : best), 0)),
-      cost: tot.cost,
-      conv: tot.conv,
-      roas: tot.cost ? tot.value / tot.cost : NaN,
-    };
-    g.genders.forEach((_, i) => {
-      row[`g${i}`] = tot.cost ? slots[i].cost / tot.cost : 0;
-    });
-    return row;
-  }).sort((a, b) => b.cost - a.cost);
-
-  els.genderCampSub.textContent =
-    `${list.length} campagne(s) · la pastille reprend la couleur du sexe dominant · `
-    + `les colonnes par sexe sont des parts du coût de la campagne`;
-
-  if (!list.length) {
-    emptyState(els.genderCampBody, 'Aucune dépense sur cette sélection.');
-    return;
-  }
-
-  renderTable(els.genderCampBody, {
-    scroll: true,
-    caption: 'Répartition du coût par campagne et par sexe',
-    cols: [
-      { key: 'name', label: 'Campagne', text: true },
-      { key: 'cost', label: 'Coût', fmt: (v) => fmtMoney(v) },
-      ...g.genders.map((_, i) => ({ key: `g${i}`, label: genderLabel(i), fmt: fmtPct })),
-      { key: 'conv', label: 'Conv.', fmt: fmtNum1 },
-      { key: 'roas', label: 'ROAS', fmt: fmtRatio },
-    ],
-    rows: list,
-  });
-}
-
-/* ── Orchestration ─────────────────────────────────────────────────────────── */
-
-function renderGenderSection() {
-  if (S.genderState !== 'ready') return;
-  // Résolution de la période avant toute lecture de S.start / S.end : le
-  // rapport la fait dans doRender, chemin que cet onglet ne traverse pas. Sans
-  // cet appel, ouvrir directement l'onglet donnait des bornes nulles.
-  // La fonction est idempotente : la rappeler ne déplace rien.
-  resolveRange();
-
-  const g = S.gender;
-  const rows = genderRows();
-
-  els.genderMeta.textContent =
-    `${fmtDateLong(S.start)} – ${fmtDateLong(S.end)} · ${genderScopeLabel()} · `
-    + `données disponibles du ${fmtDateLong(g.meta.date_start)} au `
-    + `${fmtDateLong(g.meta.date_end)}`;
-
-  // Ce que le lecteur ne peut pas deviner et qui change la lecture.
-  const totals = genderTotals(rows);
-  const grand = totals.reduce((s, t) => s + t.cost, 0);
-  const undet = g.genders.indexOf('UNDETERMINED');
-  const notes = [];
-  if (undet >= 0 && grand > 0) {
-    notes.push(
-      `« Inconnu » n'est pas une catégorie de personnes : c'est l'aveu que Google `
-      + `n'a pas su déterminer le sexe. Ces `
-      + `${fmtPct(totals[undet].cost / grand)} du coût ne sont donc ni des hommes `
-      + `ni des femmes, mais un angle mort de la mesure — le réduire passe par le `
-      + `ciblage démographique des campagnes, pas par ce rapport.`
-    );
-  }
-  els.genderNote.replaceChildren();
-  for (const n of notes) {
-    const s = document.createElement('span');
-    s.textContent = n;
-    els.genderNote.appendChild(s);
-  }
-  els.genderNote.hidden = !notes.length;
-
-  if (!rows.length) {
-    els.genderKpi.replaceChildren();
-    const msg = selectedGenderAccounts() && !selectedGenderAccounts().size
-      ? `Aucun des comptes filtrés n'a de donnée démographique. `
-        + `Seuls ces comptes en produisent : ${g.accounts.map((a) => a.name).join(', ')}.`
-      : `Aucune donnée sur cette période. Le jeu couvre du `
-        + `${fmtDateLong(g.meta.date_start)} au ${fmtDateLong(g.meta.date_end)}.`;
-    for (const el of [els.genderTimeBody, els.genderAccBody, els.genderEffBody,
-                      els.genderDevBody, els.genderCampBody]) {
-      emptyState(el, msg);
-    }
-    return;
-  }
-
-  renderGenderKpis(rows);
-  renderGenderTime(rows);
-  renderGenderByAccount(rows);
-  renderGenderEfficiency(rows);
-  renderGenderByDevice(rows);
-  renderGenderCampaigns(rows);
-}
-
 async function loadGender() {
-  if (S.genderState === 'loading' || S.genderState === 'ready') return;
+  if (S.genderState !== 'idle') return;
   S.genderState = 'loading';
-  els.genderLoad.disabled = true;
-  els.genderLoad.textContent = 'Chargement…';
-
   try {
     const res = await fetch('data/gender.json', { cache: 'no-cache' });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     S.gender = await res.json();
   } catch (err) {
+    // Absence de fichier ≠ erreur : un dépôt cloné sans exécuter le
+    // récupérateur n'a pas de données démographiques. La section reste masquée
+    // plutôt que d'afficher un cadre vide.
     S.genderState = 'error';
-    els.genderLoad.disabled = false;
-    els.genderLoad.textContent = 'Réessayer';
-    els.genderError.replaceChildren();
-    const s = document.createElement('strong');
-    s.textContent = 'Données par sexe indisponibles.';
-    els.genderError.appendChild(s);
-    const d = document.createElement('span');
-    d.textContent = `Impossible de charger data/gender.json (${err.message}). `
-      + `Générez-le avec « python scripts/fetch_gender.py ».`;
-    els.genderError.appendChild(d);
-    els.genderError.hidden = false;
+    console.info(`Données par sexe indisponibles (${err.message}) — section masquée. `
+      + `Générez data/gender.json avec « python scripts/fetch_gender.py ».`);
     return;
   }
-
+  if (!S.gender || !Array.isArray(S.gender.facts) || !S.gender.facts.length) {
+    S.genderState = 'error';
+    return;
+  }
   S.genderState = 'ready';
-  els.genderError.hidden = true;
-  els.genderLoader.hidden = true;
-  els.genderContent.hidden = false;
 
-  fillSelectFrom(els.genderMetric, GENDER_METRICS, S.genderMetric);
-  els.genderMetric.addEventListener('change', () => {
-    S.genderMetric = els.genderMetric.value;
-    renderGenderSection();
-  });
-
-  fillSelectFrom(els.genderEffMetric, GENDER_EFF, S.genderEffMetric);
-  els.genderEffMetric.addEventListener('change', () => {
-    S.genderEffMetric = els.genderEffMetric.value;
-    renderGenderSection();
-  });
-
-  buildSegmented(els.genderGrain,
-    [{ key: 'day', label: 'Jour' }, { key: 'week', label: 'Semaine' },
-     { key: 'month', label: 'Mois' }],
-    () => S.genderGrain, (k) => { S.genderGrain = k; renderGenderSection(); });
-
-  const scale = [{ key: 'volume', label: 'Volume' }, { key: 'share', label: 'Base 100' }];
-  buildSegmented(els.genderScale, scale,
+  buildSegmented(els.genderScale,
+    [{ key: 'volume', label: 'Volume' }, { key: 'share', label: 'Base 100' }],
     () => S.genderScale, (k) => { S.genderScale = k; renderGenderSection(); });
-  buildSegmented(els.genderAccScale, scale,
-    () => S.genderAccScale, (k) => { S.genderAccScale = k; renderGenderSection(); });
-  buildSegmented(els.genderDevScale, scale,
-    () => S.genderDevScale, (k) => { S.genderDevScale = k; renderGenderSection(); });
 
   buildViewToggles();
   renderGenderSection();
-  writeHash();
 }
 
 /* ── Navigation entre vues ────────────────────────────────────────────────── */
@@ -6095,7 +5695,6 @@ function setView(view) {
   S.view = view;
   els.contenu.hidden = view !== 'report';
   els.viewLive.hidden = view !== 'live';
-  els.viewGender.hidden = view !== 'gender';
   // La barre reste visible sur les deux vues : le filtre de comptes vaut
   // partout. Seuls les contrôles sans objet sur le Live sont masqués — période,
   // appareil, réseau et recherche de campagne n'y ont pas de sens, la vue
@@ -6105,10 +5704,6 @@ function setView(view) {
     n.hidden = view !== 'report';
   }
   els.filterAction.hidden = view !== 'live';
-  // L'onglet Sexes partage la période et les comptes du rapport, mais pas
-  // l'appareil ni le réseau : sa propre ventilation par appareil s'y
-  // superposerait, et deux filtres qui se recoupent invitent à des lectures
-  // fausses.
   for (const b of els.viewTabs.querySelectorAll('button')) {
     const on = b.dataset.key === view;
     b.setAttribute('aria-pressed', String(on));
@@ -6116,11 +5711,9 @@ function setView(view) {
   }
   writeHash();
   if (view === 'live' && S.liveState === 'idle') loadLive();
-  if (view === 'gender' && S.genderState === 'idle') loadGender();
   // Les SVG sont dimensionnés sur une largeur mesurée : un conteneur masqué
   // mesure zéro, il faut redessiner en revenant sur la vue.
   if (view === 'report') render();
-  else if (view === 'gender') renderGenderSection();
   else if (S.liveState === 'ready') renderLive();
   else els.filterStatus.textContent = 'Direct en cours de chargement…';
 
@@ -6230,18 +5823,8 @@ function cacheEls() {
     velocityBody: 'velocity-body', velocitySub: 'velocity-sub', velocityBid: 'velocity-bid',
     marginalBody: 'marginal-body', marginalSub: 'marginal-sub',
     contenu: 'contenu', viewLive: 'view-live', viewTabs: 'view-tabs',
-    viewGender: 'view-gender', genderError: 'gender-error', genderNote: 'gender-note',
-    genderLoader: 'gender-loader', genderLoad: 'gender-load', genderContent: 'gender-content',
-    genderMeta: 'gender-meta', genderKpi: 'gender-kpi', genderMetric: 'gender-metric',
-    genderGrain: 'gender-grain', genderScale: 'gender-scale',
-    genderTimeBody: 'gender-time-body', genderTimeSub: 'gender-time-sub',
-    genderAccBody: 'gender-acc-body', genderAccSub: 'gender-acc-sub',
-    genderAccScale: 'gender-acc-scale',
-    genderEffBody: 'gender-eff-body', genderEffSub: 'gender-eff-sub',
-    genderEffMetric: 'gender-eff-metric',
-    genderDevBody: 'gender-dev-body', genderDevSub: 'gender-dev-sub',
-    genderDevScale: 'gender-dev-scale',
-    genderCampBody: 'gender-camp-body', genderCampSub: 'gender-camp-sub',
+    genderSection: 'gender-section', genderSub: 'gender-sub',
+    genderNote: 'gender-note', genderScale: 'gender-scale', genderBody: 'gender-body',
     filterbar: 'filterbar',
     liveError: 'live-error', liveTz: 'live-tz', liveAlertSlot: 'live-alert-slot',
     liveMeta: 'live-meta', liveKpi: 'live-kpi',
@@ -6272,8 +5855,7 @@ function showFatal(message) {
 
 function wireControls() {
   buildSegmented(els.viewTabs,
-    [{ key: 'report', label: 'Rapport' }, { key: 'live', label: 'Live' },
-     { key: 'gender', label: 'Sexes' }],
+    [{ key: 'report', label: 'Rapport' }, { key: 'live', label: 'Live' }],
     () => S.view, setView);
 
   buildSegmented(els.rangePresets, RANGE_PRESETS, () => S.range, (k) => {
@@ -6353,7 +5935,6 @@ function wireControls() {
 
   els.exportCsv.addEventListener('click', exportCsv);
   els.semLoad.addEventListener('click', loadTerms);
-  els.genderLoad.addEventListener('click', loadGender);
 
   // Un clic hors d'un menu le referme.
   document.addEventListener('click', (ev) => {
@@ -6415,13 +5996,13 @@ async function init() {
   onFilterChange();
   setView(S.view);
 
-  // Chargé sans bouton : l'agrégat AI Max pèse une fraction de data.json, déjà
-  // chargé d'office. La section se dévoile seule quand le fichier arrive, et
-  // reste masquée s'il n'existe pas.
+  // Chargés sans bouton : ces deux agrégats pèsent une fraction de data.json,
+  // déjà chargé d'office. Leur section se dévoile seule quand le fichier
+  // arrive, et reste masquée s'il n'existe pas.
   loadAimax();
+  loadGender();
 
   if (S.autoLoadTerms) loadTerms();
-  if (S.autoLoadGender) loadGender();
 }
 
 document.addEventListener('DOMContentLoaded', init);

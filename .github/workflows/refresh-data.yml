@@ -77,9 +77,9 @@ jobs:
           GOOGLE_ADS_LOGIN_CUSTOMER_ID: ${{ secrets.GOOGLE_ADS_LOGIN_CUSTOMER_ID }}
         run: python scripts/fetch_aimax.py --days 90 --max-terms 4000
 
-      # Même fenêtre que le rapport principal pour que les deux onglets parlent
-      # de la même période. Même clause « continue-on-error » : l'onglet Sexes se
-      # signale absent plutôt que de faire échouer le rafraîchissement.
+      # Même fenêtre que le rapport principal : cette section partage son filtre
+      # de période. Même clause « continue-on-error » : la section se masque
+      # plutôt que de faire échouer le rafraîchissement.
       - name: Récupérer les performances par sexe
         if: steps.check.outputs.ready == 'true'
         continue-on-error: true

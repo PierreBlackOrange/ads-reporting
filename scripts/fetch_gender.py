@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Récupère les performances par sexe et produit data/gender.json.
+Récupère la répartition du coût par sexe et produit data/gender.json.
 
     python scripts/fetch_gender.py
     python scripts/fetch_gender.py --days 90
@@ -19,9 +19,17 @@ donc aucun angle mort à signaler, contrairement à ce qu'on pourrait craindre
 d'une vue par critère. `segments.adjusted_gender`, l'autre voie possible, est
 refusé avec des métriques (PROHIBITED_SEGMENT_WITH_METRIC_IN_SELECT_OR_WHERE_CLAUSE).
 
-Le fichier est séparé de data.json plutôt qu'ajouté comme dimension : le sexe
-multiplierait par trois le nombre de lignes d'un fichier déjà à 1,5 Mo, chargé
-d'office. Ici il ne se charge qu'à l'ouverture de l'onglet.
+GRAIN : (jour × compte × sexe)
+------------------------------
+Le rapport n'affiche qu'une carte — la composition du coût par compte — et ce
+grain est exactement ce qu'elle demande : le jour pour suivre le filtre de
+période, le compte pour les lignes, le sexe pour les segments.
+
+Descendre à la campagne ou à l'appareil multipliait le fichier par vingt pour
+des colonnes que rien n'affiche. Comme la requête ne demande plus ces champs,
+c'est l'API qui agrège : moins de lignes transférées, extraction plus rapide.
+À ce grain le fichier tient dans quelques dizaines de Ko et se charge avec le
+rapport, sans bouton.
 """
 
 from __future__ import annotations
@@ -38,14 +46,12 @@ sys.path.insert(0, str(SCRIPT_DIR))
 
 import fetch_ads_data as F  # noqa: E402
 
+# Ni campaign.id ni segments.device : chaque champ demandé segmente le résultat.
+# Les retirer laisse l'API agréger côté serveur, ce qui divise le volume renvoyé.
 GENDER_QUERY = """
     SELECT
       ad_group_criterion.gender.type,
-      campaign.id,
-      campaign.name,
-      campaign.advertising_channel_type,
       segments.date,
-      segments.device,
       metrics.impressions,
       metrics.clicks,
       metrics.cost_micros,
@@ -69,22 +75,8 @@ GENDER_LABELS = {
 }
 
 
-class Indexer:
-    def __init__(self) -> None:
-        self.values: list = []
-        self._pos: dict = {}
-
-    def get(self, value):
-        key = json.dumps(value, sort_keys=True) if isinstance(value, dict) else value
-        pos = self._pos.get(key)
-        if pos is None:
-            pos = self._pos[key] = len(self.values)
-            self.values.append(value)
-        return pos
-
-
 def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="Performances par sexe.")
+    p = argparse.ArgumentParser(description="Répartition du coût par sexe.")
     p.add_argument("--days", type=int, default=180, help="profondeur (défaut : 180)")
     p.add_argument("--end", default=None, help="dernier jour, AAAA-MM-JJ (défaut : hier)")
     p.add_argument("--accounts", default=None, help="CID séparés par des virgules")
@@ -109,16 +101,14 @@ def main() -> None:
     if not accounts:
         F.die("Aucun compte client actif à interroger.")
 
-    acc_idx = Indexer()
-    camp_idx = Indexer()
-    dev_idx = Indexer()
+    out_accounts: list[dict] = []
     dates: set[str] = set()
 
-    # (date, campagne, sexe, appareil) → agrégats
+    # (date, compte, sexe) → agrégats
     buckets: dict[tuple, list] = {}
     failures: list[tuple[str, str]] = []
     raw_rows = 0
-    per_account_rows: dict[str, int] = {}
+    active: list[dict] = []
 
     for i, account in enumerate(accounts, 1):
         label = f"{account['name']} ({F.fmt_cid(account['id'])})"
@@ -135,11 +125,12 @@ def main() -> None:
 
         print(f"{len(rows)} ligne(s)")
         raw_rows += len(rows)
-        per_account_rows[account["id"]] = len(rows)
         if not rows:
             continue
 
-        ai = acc_idx.get({"name": account["name"], "currency": account["currency"]})
+        active.append(account)
+        ai = len(out_accounts)
+        out_accounts.append({"name": account["name"], "currency": account["currency"]})
 
         for r in rows:
             seg = r.get("segments") or {}
@@ -157,15 +148,7 @@ def main() -> None:
                 continue
             dates.add(date)
 
-            c = r.get("campaign") or {}
-            ci = camp_idx.get({
-                "name": c.get("name") or "?",
-                "account": ai,
-                "channel": c.get("advertisingChannelType") or "UNKNOWN",
-            })
-            di = dev_idx.get(seg.get("device") or "UNKNOWN")
-
-            key = (date, ci, GENDER_ORDER.index(gender), di)
+            key = (date, ai, GENDER_ORDER.index(gender))
             b = buckets.get(key)
             if b is None:
                 b = buckets[key] = [0, 0, 0.0, 0.0, 0.0]
@@ -183,22 +166,21 @@ def main() -> None:
     date_pos = {d: i for i, d in enumerate(sorted_dates)}
 
     facts = []
-    for (date, ci, gi, di), b in sorted(buckets.items()):
+    for (date, ai, gi), b in sorted(buckets.items()):
         facts.append([
-            date_pos[date], ci, gi, di,
+            date_pos[date], ai, gi,
             b[0], b[1], round(b[2], 2), round(b[3], 2), round(b[4], 2),
         ])
 
     # La devise ne se déduit que des comptes qui ont des données : un compte
     # dormant dans une autre devise ferait basculer à tort un périmètre homogène.
-    active = [a for a in accounts if per_account_rows.get(a["id"])]
     currency, _rates = F.resolve_currency(active or accounts, cfg)
 
-    total_cost = sum(f[6] for f in facts)
-    by_gender = {}
+    total_cost = sum(f[5] for f in facts)
+    by_gender: dict[str, float] = {}
     for f in facts:
         g = GENDER_ORDER[f[2]]
-        by_gender[g] = by_gender.get(g, 0.0) + f[6]
+        by_gender[g] = by_gender.get(g, 0.0) + f[5]
 
     payload = {
         "meta": {
@@ -208,17 +190,15 @@ def main() -> None:
             "days": args.days,
             "currency": currency,
             "accounts_scanned": len(accounts),
-            "accounts_with_data": len(active),
+            "accounts_with_data": len(out_accounts),
             "raw_rows": raw_rows,
             "failures": [{"account": a, "error": e} for a, e in failures],
         },
         "genders": GENDER_ORDER,
         "genderLabels": [GENDER_LABELS[g] for g in GENDER_ORDER],
-        "accounts": acc_idx.values,
-        "campaigns": camp_idx.values,
-        "devices": dev_idx.values,
+        "accounts": out_accounts,
         "dates": sorted_dates,
-        # [dateIdx, campIdx, genderIdx, deviceIdx, impr, clicks, cost, conv, value]
+        # [dateIdx, accountIdx, genderIdx, impr, clicks, cost, conv, value]
         "facts": facts,
     }
 
@@ -228,8 +208,8 @@ def main() -> None:
                    encoding="utf-8")
 
     print(f"\nÉcrit {out} ({out.stat().st_size / 1024:.0f} Ko)")
-    print(f"  {len(facts)} ligne(s) · {len(acc_idx.values)} compte(s) · "
-          f"{len(camp_idx.values)} campagne(s) · {len(sorted_dates)} jour(s)")
+    print(f"  {len(facts)} ligne(s) · {len(out_accounts)} compte(s) · "
+          f"{len(sorted_dates)} jour(s)")
     for g in GENDER_ORDER:
         c = by_gender.get(g, 0.0)
         pct = (c / total_cost * 100) if total_cost else 0

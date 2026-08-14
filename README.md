@@ -169,39 +169,45 @@ le publier délibérément : `git add -f data/aimax.json`.
 
 ---
 
-## Onglet Sexes
+## Section « Répartition du coût par sexe »
 
-Un troisième onglet, `#vue=gender`, alimenté par `data/gender.json`
-(`python scripts/fetch_gender.py`, 180 jours par défaut). Il se charge **à
-l'ouverture de l'onglet** et non au démarrage : 2,1 Mo (507 Ko compressés) sur un
-fichier que la plupart des visites n'ouvriront pas.
+Une carte du rapport, sous les classements, alimentée par `data/gender.json`
+(`python scripts/fetch_gender.py`, 180 jours par défaut). Elle trace les **8 plus
+gros comptes en dépense**, chacun ramené à 100 %, et suit la période et le filtre
+de comptes de la barre du haut comme le reste du rapport.
+
+Le graphique s'arrête à 8 lignes ; le sous-titre annonce la part du coût couverte
+et la vue **Tableau** liste **tous** les comptes, avec conversions et ROAS. Rien
+n'est tronqué en silence.
 
 ### D'où vient la donnée
 
 De `gender_view`, au grain critère démographique, agrégée en
-(jour × campagne × sexe × appareil). Vérifié avant d'écrire le script : sur les
-trois comptes les plus dépensiers, la somme des coûts de `gender_view` **égale à
-100 %** le coût total des campagnes. Il n'y a donc aucun angle mort de couverture
-à signaler. L'autre voie possible, `segments.adjusted_gender`, est refusée par
-l'API dès qu'on demande des métriques
+(jour × compte × sexe). Vérifié avant d'écrire le script : sur les trois comptes
+les plus dépensiers, la somme des coûts de `gender_view` **égale à 100 %** le coût
+total des campagnes. Il n'y a donc aucun angle mort de couverture à signaler.
+L'autre voie possible, `segments.adjusted_gender`, est refusée par l'API dès qu'on
+demande des métriques
 (`PROHIBITED_SEGMENT_WITH_METRIC_IN_SELECT_OR_WHERE_CLAUSE`).
 
-Fichier séparé de `data.json` plutôt que dimension supplémentaire : le sexe
-triplerait le nombre de lignes d'un fichier déjà chargé d'office.
+Ni campagne ni appareil dans la requête : chaque champ demandé segmente le
+résultat, et cette carte n'en affiche aucun. À ce grain le fichier tient dans
+**244 Ko** au lieu de 2,1 Mo, ce qui lui permet d'être chargé avec le rapport
+sans bouton. Il reste séparé de `data.json` pour que son absence masque la
+section au lieu de casser le rapport.
 
 ### « Inconnu » n'est pas une troisième catégorie de personnes
 
 C'est l'aveu que Google n'a pas su trancher. Sur ce MCC cela pèse **40 % du
-coût** — davantage que « Femmes » d'un facteur dix. Trois conséquences pour la
-lecture :
+coût** — dix fois « Femmes ». Deux conséquences pour la lecture :
 
 - La catégorie reste **affichée en clair**, jamais rangée dans un « autres » qui
-  la ferait passer pour marginale. Un bandeau le rappelle en tête d'onglet.
+  la ferait passer pour marginale. Une mention sous le titre de la carte le
+  rappelle, avec la part recalculée sur la sélection courante — sur un compte
+  isolé elle peut tomber à zéro.
 - Un CPA « Hommes » ne se compare donc pas à un CPA global : 40 % de la dépense
   est ailleurs. Réduire ce bloc passe par le ciblage démographique des
   campagnes, pas par ce rapport.
-- Une campagne à 85 % d'« Inconnu » ne dit rien de son audience réelle. Elle dit
-  que la mesure démographique n'y fonctionne pas.
 
 L'ordre d'affichage — Hommes, Femmes, Inconnu — et les couleurs sont **figés**,
 indépendamment du volume. Une catégorie qui change de place ou de teinte d'un
@@ -209,15 +215,14 @@ export à l'autre rendrait deux captures incomparables.
 
 ### Base 100
 
-Trois cartes proposent le basculement `Volume` / `Base 100` : par compte, par
-appareil, et sur l'évolution. En base 100 chaque colonne est ramenée à 100 % et
-la dépense absolue reste affichée à droite de la barre — sans elle, un compte à
-2 k€ et un à 180 k€ auraient exactement la même allure.
+Le basculement `Volume` / `Base 100` ramène chaque compte à 100 % ; la dépense
+absolue reste affichée à droite de la barre — sans elle, un compte à 2 k€ et un à
+180 k€ auraient exactement la même allure.
 
-Le même basculement a été ajouté à la carte **Répartition du coût par compte** du
-rapport, qui offre désormais `Appareil · Base 100 · Réseau`. « Réseau » a été
-conservé, pas remplacé : la répartition Search / Display / Partenaires répond à
-une autre question que le mix d'appareils.
+Le même basculement existe sur la carte **Répartition du coût par compte**, qui
+offre `Appareil · Base 100 · Réseau`. « Réseau » a été conservé, pas remplacé :
+la répartition Search / Display / Partenaires répond à une autre question que le
+mix d'appareils.
 
 ---
 
@@ -437,7 +442,7 @@ https://VOTRE-COMPTE.github.io/VOTRE-REPO/
 
 ```bash
 python scripts/fetch_ads_data.py     # rapport      → data/data.json
-python scripts/fetch_gender.py       # onglet Sexes → data/gender.json
+python scripts/fetch_gender.py       # par sexe     → data/gender.json
 git add data/data.json data/gender.json
 git commit -m "Mise à jour des données"
 git push
@@ -474,9 +479,10 @@ recalculent sur la même sélection.
 Dans le menu *Comptes*, un premier clic **isole** le compte cliqué ; les clics
 suivants ajoutent ou retirent. Tout désélectionner revient à « tous ».
 
-Trois onglets en haut à droite — **Rapport**, **Live**, **Sexes** — partagent
-cette rangée. Les filtres période et comptes s'appliquent aux trois ; appareil,
-réseau et nom de campagne ne concernent que le rapport.
+Deux onglets en haut à droite — **Rapport** et **Live** — partagent cette rangée.
+Le filtre de comptes s'applique aux deux ; période, appareil, réseau et nom de
+campagne ne concernent que le rapport, le Live portant sur la seule journée en
+cours.
 
 **Liens partageables** — l'état des filtres est écrit dans l'URL. Copiez la barre
 d'adresse et le destinataire ouvre exactement la même vue :
