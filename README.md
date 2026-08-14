@@ -169,6 +169,31 @@ le publier délibérément : `git add -f data/aimax.json`.
 
 ---
 
+## Page Cannibalisation sémantique
+
+`cannibalisation.html` est un export **figé**, produit par un autre projet
+(`bo-cannibalisation-semantique`, menu **Export HTML autonome**) qui le dépose
+sur Google Drive. On le republie ici :
+
+```bash
+python scripts/publish_cannibalisation.py chemin/vers/export.html
+git add cannibalisation.html && git commit && git push
+```
+
+Le script ajoute la navigation vers le reste du dashboard et **refuse un export
+vide** — le cas s'est produit une fois, l'injection des données ayant échoué
+silencieusement côté Apps Script, et rien ne le signalait.
+
+Un **lien** dans l'en-tête, pas un troisième onglet : les onglets basculent
+entre deux vues du même jeu de données, filtrables et rafraîchies ensemble.
+Cette page est un document distinct, figé à sa date d'extraction. Leur donner la
+même apparence laisserait croire qu'elle suit les filtres.
+
+Elle ne se met donc **pas** à jour avec `data.json` : il faut réexporter puis
+republier. La date d'extraction est en tête de page, et un rappel figure en pied.
+
+---
+
 ## ⚠️ Avant de publier : ce dépôt est public
 
 Sur un dépôt public, **toute personne connaissant l'URL voit vos données** :

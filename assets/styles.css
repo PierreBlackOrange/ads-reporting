@@ -240,6 +240,16 @@ code {
 .btn--ghost { background: transparent; border-color: transparent; color: var(--text-secondary); }
 .btn--ghost:hover { background: var(--wash); color: var(--text-primary); }
 
+/* Lien de l'en-tête vers une page distincte. Un liseré, contrairement aux
+   boutons fantômes, pour qu'il ne se confonde pas avec les commandes de la
+   vue courante : il fait quitter la page, elles non. */
+.header-link {
+  text-decoration: none;
+  border-color: var(--border);
+  white-space: nowrap;
+}
+.header-link span { font-size: 11px; opacity: .7; }
+
 .btn--primary {
   background: var(--series-1);
   border-color: transparent;

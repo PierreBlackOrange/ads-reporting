@@ -19,6 +19,14 @@
   </div>
   <div class="page-header__actions">
     <div class="segmented" role="tablist" aria-label="Vue" id="view-tabs"></div>
+    <!-- Un lien, pas un troisième onglet : les onglets basculent entre deux
+         vues du même jeu de données, celui-ci mène à une page figée produite
+         par un autre pipeline. Leur donner la même apparence laisserait croire
+         qu'elle se filtre et se rafraîchit comme le reste. -->
+    <a class="btn btn--ghost header-link" href="cannibalisation.html"
+       title="Analyse de cannibalisation sémantique — page distincte, figée à sa date d'extraction">
+      Cannibalisation <span aria-hidden="true">↗</span>
+    </a>
     <button type="button" class="btn btn--icon" id="theme-toggle"
             aria-label="Basculer le thème clair / sombre" title="Thème clair / sombre">
       <span class="theme-toggle__glyph" aria-hidden="true"></span>
