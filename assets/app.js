@@ -196,6 +196,17 @@ const S = {
   topMetric: 'cost',
   mixDim: 'device',
   mixHidden: new Set(),
+  tracking: null,
+  trackingState: 'idle', // idle | loading | ready | error
+  changelog: null,
+  changelogState: 'idle',
+  trkDim: 'account',     // account | market
+  trkGrain: 'week',
+  trkScale: 'index',     // base 100 par défaut : c'est la seule échelle qui
+                         // permette de lire des clics et un taux ensemble
+  trkLagScale: 'share',
+  trkSilent: [],
+
   gender: null,
   genderState: 'idle',   // idle | loading | ready | error
   // Base 100 par défaut : la question posée à cette carte est « quelle est la
@@ -710,17 +721,35 @@ function renderLineChart(container, cfg) {
     }, xLabels[lastIdx], svg);
   }
 
-  // Repère vertical : marque une frontière sur l'axe des abscisses (fin de la
-  // zone consolidée, par exemple). Trait plein teinté et étiqueté — sans
-  // étiquette, un lecteur ne peut pas deviner ce qu'il sépare.
-  if (cfg.vmark && cfg.vmark.at >= 0 && cfg.vmark.at < xLabels.length) {
-    const vx = x(cfg.vmark.at);
+  // Repères verticaux : marquent des frontières sur l'axe des abscisses (fin de
+  // la zone consolidée, déploiement technique…). Trait plein teinté et étiqueté
+  // — sans étiquette, un lecteur ne peut pas deviner ce qu'il sépare.
+  //
+  // `vmarks` accepte plusieurs repères. Au-delà de deux, les étiquettes se
+  // chevaucheraient : les traits restent, les libellés partent dans l'infobulle
+  // et sous le graphique. Un repère porte alors un numéro, pas un texte — un
+  // empilement de mots illisibles ne renseignerait personne.
+  const vmarks = (cfg.vmarks || (cfg.vmark ? [cfg.vmark] : []))
+    .filter((m) => m && m.at >= 0 && m.at < xLabels.length);
+  const labelMarks = vmarks.length <= 2;
+  vmarks.forEach((m, mi) => {
+    const vx = x(m.at);
     el('line', {
       class: 'threshold-line', x1: vx, x2: vx, y1: padT, y2: padT + plotH,
+      ...(m.color ? { stroke: m.color } : {}),
     }, svg);
-    textNode('text', {
-      class: 'threshold-label', x: vx + 5, y: padT + 10, 'text-anchor': 'start',
-    }, cfg.vmark.label || '', svg);
+    const text = labelMarks ? (m.label || '') : (m.tick || String(mi + 1));
+    if (text) {
+      textNode('text', {
+        class: 'threshold-label', x: vx + 5, y: padT + 10, 'text-anchor': 'start',
+      }, text, svg);
+    }
+  });
+  // Index des repères par abscisse, pour l'infobulle.
+  const marksAt = new Map();
+  for (const m of vmarks) {
+    if (!marksAt.has(m.at)) marksAt.set(m.at, []);
+    marksAt.get(m.at).push(m);
   }
 
   // Lavis d'aire à ~10 % : un voile, jamais un bloc saturé.
@@ -820,6 +849,11 @@ function renderLineChart(container, cfg) {
       if (series.length > 1 && cfg.tipTotal !== false) {
         const sum = series.reduce((a, s) => a + (isFinite(s.values[i]) ? s.values[i] : 0), 0);
         if (cfg.summable !== false) tipRow(n, { name: 'Total', value: fmt(sum), total: true });
+      }
+      // Les repères de la date survolée : c'est là que se lit la corrélation
+      // entre un déploiement technique et une cassure de courbe.
+      for (const m of (marksAt.get(i) || [])) {
+        tipRow(n, { name: m.label || 'Changement', value: m.tipValue || '', color: m.color });
       }
     });
   };
@@ -4489,6 +4523,10 @@ function writeHash() {
   if (S.mixDim !== 'device') p.set('x', S.mixDim);
   if (S.marginMeasure !== 'margin') p.set('mg', S.marginMeasure);
   if (S.genderScale !== 'share') p.set('gs', S.genderScale);
+  if (S.trkDim !== 'account') p.set('td', S.trkDim);
+  if (S.trkGrain !== 'week') p.set('tg', S.trkGrain);
+  if (S.trkScale !== 'index') p.set('ts', S.trkScale);
+  if (S.trkLagScale !== 'share') p.set('tl', S.trkLagScale);
   if (S.aimaxMetric !== 'cost') p.set('am', S.aimaxMetric);
   if (S.aimaxSource !== 'all') p.set('as', S.aimaxSource);
   if (S.liveAction !== null) p.set('ac', S.liveAction);
@@ -4514,7 +4552,7 @@ function readHash() {
 
   // « gender » a existé comme troisième onglet : un ancien lien retombe sur le
   // rapport, où la répartition par sexe vit désormais.
-  if (['report', 'live'].includes(p.get('vue'))) S.view = p.get('vue');
+  if (['report', 'live', 'tracking'].includes(p.get('vue'))) S.view = p.get('vue');
   const r = p.get('r');
   if (r) S.range = r;
   if (p.get('s')) S.start = p.get('s');
@@ -4529,6 +4567,10 @@ function readHash() {
   if (METRICS[p.get('t')]) S.topMetric = p.get('t');
   if (['device', 'device100', 'network'].includes(p.get('x'))) S.mixDim = p.get('x');
   if (['volume', 'share'].includes(p.get('gs'))) S.genderScale = p.get('gs');
+  if (['account', 'market'].includes(p.get('td'))) S.trkDim = p.get('td');
+  if (['day', 'week', 'month'].includes(p.get('tg'))) S.trkGrain = p.get('tg');
+  if (['index', 'volume'].includes(p.get('ts'))) S.trkScale = p.get('ts');
+  if (['volume', 'share'].includes(p.get('tl'))) S.trkLagScale = p.get('tl');
 
   if (AIMAX_METRICS[p.get('am')]) S.aimaxMetric = p.get('am');
   // La source est validée à l'arrivée du fichier, seul juge de ce qui existe.
@@ -4563,6 +4605,8 @@ function onFilterChange() {
   // Le filtre de comptes vaut sur les deux vues : le Live doit se redessiner
   // même quand on le change depuis le rapport.
   if (S.liveState === 'ready') renderLive();
+  if (S.trackingState === 'ready') renderTracking();
+  if (S.view === 'tracking') { updateFilterSummaries(); writeHash(); return; }
   if (S.view === 'live') {
     // Le rapport ne se redessine pas ici : c'est lui qui écrit l'URL d'ordinaire.
     updateFilterSummaries();
@@ -5689,19 +5733,1241 @@ async function loadGender() {
   renderGenderSection();
 }
 
+/* ════════════════════════════════════════════════════════════════════════════
+   Onglet Tracking / Consent Mode
+
+   CE QUE CET ONGLET NE PEUT PAS MONTRER, ET POURQUOI
+   -------------------------------------------------
+   Le taux de Consent Mode (granted / denied) n'existe pas dans l'API Google Ads :
+   sondé sur la v25, `name LIKE '%consent%'` renvoie zéro champ. Les conversions
+   modélisées ne sont pas non plus séparables des conversions observées
+   (`%modeled%`, `%modelled%` : zéro champ). Ces deux données vivent dans la CMP,
+   dans GTM et dans GA4.
+
+   Afficher « 98 % de consentement » à partir de rien serait le pire service à
+   rendre à quelqu'un qui cherche une cassure de mesure. Cet onglet mesure donc le
+   tracking par ses EFFETS, ce qui suffit à répondre à la seule question qui
+   compte : cette baisse de conversions vient-elle de la performance ou de la
+   mesure ?
+
+   Le raisonnement, en une phrase : une cassure de balise fait tomber les
+   conversions sans toucher aux clics. Une vraie baisse de performance déplace les
+   deux. Le rapport conversions / clic sépare les deux cas.
+
+   Le taux de consentement, quand il est fourni via data/changelog.json (export
+   de la CMP), est superposé aux mêmes dates — mais il vient de là, jamais d'ici.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/* Colonnes des tableaux de tracking.json */
+const TD = { DATE: 0, ACC: 1, IMPR: 2, CLICKS: 3, COST: 4, CONV: 5, ALL: 6, VALUE: 7 };
+const TS = { DATE: 0, ACC: 1, ACTION: 2, CONV: 3, ALL: 4, VALUE: 5 };
+const TM = { DATE: 0, ACC: 1, MARKET: 2, CLICKS: 3, COST: 4, CONV: 5, ALL: 6, VALUE: 7 };
+const TL = { MONTH: 0, ACC: 1, GROUP: 2, ALL: 3 };
+const TC = { DATE: 0, ACC: 1, TYPE: 2, OP: 3, CLIENT: 4, COUNT: 5 };
+
+/**
+ * Réglages du diagnostic. Nommés et affichés dans l'interface : un seuil caché
+ * transforme un diagnostic en oracle, et personne ne peut discuter un oracle.
+ */
+const TRK_RECENT_DAYS = 7;    // la période jugée
+const TRK_BASE_DAYS = 28;     // la référence, juste avant
+const TRK_DROP = 0.30;        // baisse relative jugée significative
+const TRK_STABLE = 0.20;      // au-delà, le trafic n'est plus « stable »
+const TRK_SILENCE_MIN = 3;    // jours sans conversion avant de signaler une action
+const TRK_MIN_CONV = 20;      // volume minimal pour qu'un silence soit interprétable
+const TRK_MIN_CLICKS = 200;   // sous ce trafic, un taux de conversion est du bruit
+
+/**
+ * Verdicts. L'ordre est celui du tri : ce qui exige une action d'abord.
+ *
+ * La teinte n'est pas décorative — rouge et orange disent « mesure », les autres
+ * disent « marché ». C'est la distinction que tout l'onglet cherche à établir.
+ */
+const TRK_VERDICTS = {
+  break:   { rank: 0, label: 'Cassure de mesure', slot: 8,
+             hint: 'plus aucune conversion alors que les clics continuent' },
+  measure: { rank: 1, label: 'Mesure suspecte', slot: 2,
+             hint: 'le taux de conversion chute, le trafic non' },
+  perf:    { rank: 2, label: 'Performance', slot: 4,
+             hint: 'taux de conversion et trafic baissent ensemble' },
+  volume:  { rank: 3, label: 'Volume', slot: 7,
+             hint: 'le trafic baisse, le taux de conversion tient' },
+  stable:  { rank: 4, label: 'Stable', slot: 3, hint: 'rien à signaler' },
+  thin:    { rank: 5, label: 'Trop peu de trafic', slot: 6,
+             hint: `moins de ${TRK_MIN_CLICKS} clics sur la période de référence` },
+};
+
+const CHANGE_TYPE_SLOT = {
+  GTM: 7, CONTAINER: 5, DIDOMI: 2, ADS: 1, SITE: 4, AUTRE: 6,
+};
+
+/* Types de ressources du journal Google Ads, en français. */
+const ADS_CHANGE_LABELS = {
+  CAMPAIGN: 'Campagne', AD_GROUP: 'Groupe d\'annonces', AD: 'Annonce',
+  AD_GROUP_AD: 'Annonce', AD_GROUP_CRITERION: 'Mot-clé / critère',
+  CAMPAIGN_CRITERION: 'Ciblage de campagne', CAMPAIGN_BUDGET: 'Budget',
+  AD_GROUP_BID_MODIFIER: 'Ajustement d\'enchère', ASSET: 'Asset',
+  AD_GROUP_ASSET: 'Asset de groupe', CAMPAIGN_ASSET: 'Asset de campagne',
+  ASSET_SET: 'Groupe d\'assets', ASSET_SET_ASSET: 'Groupe d\'assets',
+  FEED: 'Flux', FEED_ITEM: 'Élément de flux', AD_GROUP_FEED: 'Flux de groupe',
+  CAMPAIGN_FEED: 'Flux de campagne', BIDDING_STRATEGY: 'Stratégie d\'enchères',
+  CUSTOMER_ASSET: 'Asset du compte', SHARED_SET: 'Liste partagée',
+  CAMPAIGN_SHARED_SET: 'Liste partagée', UNKNOWN: 'Autre',
+};
+
+const emptyT = () => ({ impr: 0, clicks: 0, cost: 0, conv: 0, all: 0, value: 0 });
+
+function addT(t, impr, clicks, cost, conv, all, value) {
+  t.impr += impr; t.clicks += clicks; t.cost += cost;
+  t.conv += conv; t.all += all; t.value += value;
+  return t;
+}
+
+function trkVerdictColor(key) {
+  return seriesColor(TRK_VERDICTS[key].slot);
+}
+
+/** Indices de comptes retenus par le filtre du haut ; null = tous. */
+function selectedTrackingAccounts() {
+  const t = S.tracking;
+  if (!t || !S.accounts.size) return null;
+  const names = new Set(
+    [...S.accounts].map((i) => S.data.accounts[i] && S.data.accounts[i].name)
+  );
+  return new Set(t.accounts.map((a, i) => (names.has(a.name) ? i : -1)).filter((i) => i >= 0));
+}
+
+/** Bornes d'index de dates correspondant à la période filtrée. */
+function trkWindow() {
+  const t = S.tracking;
+  const lo = t.dates.findIndex((d) => d >= S.start);
+  let hi = -1;
+  for (let i = t.dates.length - 1; i >= 0; i--) {
+    if (t.dates[i] <= S.end) { hi = i; break; }
+  }
+  return { lo, hi, ok: lo >= 0 && hi >= lo };
+}
+
+/**
+ * Découpe la fenêtre en « récent » et « référence ».
+ *
+ * Les deux blocs sont accolés et pris en jours calendaires : comparer sept jours
+ * à vingt-huit exige de ramener chaque bloc à une moyenne par jour, ce que fait
+ * l'appelant. Si la fenêtre filtrée est trop courte pour contenir les deux, on le
+ * dit plutôt que de comparer sept jours à trois.
+ */
+function trkBlocks() {
+  const { lo, hi, ok } = trkWindow();
+  if (!ok) return null;
+  const span = hi - lo + 1;
+  const recentDays = Math.min(TRK_RECENT_DAYS, Math.floor(span / 2));
+  if (recentDays < 3) return null;
+  const baseDays = Math.min(TRK_BASE_DAYS, span - recentDays);
+  if (baseDays < 7) return null;
+  return {
+    lo, hi, span,
+    recentFrom: hi - recentDays + 1, recentTo: hi, recentDays,
+    baseFrom: hi - recentDays - baseDays + 1, baseTo: hi - recentDays, baseDays,
+  };
+}
+
+/**
+ * Verdict d'une entité à partir de ses deux blocs.
+ *
+ * Tout est exprimé en moyennes par jour : un bloc de 7 jours et un de 28 ne se
+ * comparent pas autrement. Le taux de conversion est all_conversions / clic —
+ * la santé d'une balise se lit sur toutes les actions, pas seulement celles que
+ * les enchères comptent.
+ */
+function trkDiagnose(recent, base, recentDays, baseDays) {
+  const rClicks = recent.clicks / recentDays;
+  const bClicks = base.clicks / baseDays;
+  const rCvr = recent.clicks ? recent.all / recent.clicks : NaN;
+  const bCvr = base.clicks ? base.all / base.clicks : NaN;
+
+  const clickDelta = bClicks ? (rClicks - bClicks) / bClicks : NaN;
+  const cvrDelta = isFinite(bCvr) && bCvr ? (rCvr - bCvr) / bCvr : NaN;
+
+  let verdict = 'stable';
+  if (base.clicks < TRK_MIN_CLICKS || !isFinite(bCvr) || !bCvr) {
+    verdict = 'thin';
+  } else if (recent.all === 0 && recent.clicks > 0) {
+    verdict = 'break';
+  } else if (cvrDelta <= -TRK_DROP && Math.abs(clickDelta) <= TRK_STABLE) {
+    verdict = 'measure';
+  } else if (cvrDelta <= -TRK_DROP && clickDelta <= -TRK_DROP) {
+    verdict = 'perf';
+  } else if (cvrDelta <= -TRK_DROP) {
+    // Le taux chute et le trafic MONTE : une hausse de trafic peut diluer un taux
+    // sans qu'aucune balise ne soit en cause. On reste sur « performance ».
+    verdict = 'perf';
+  } else if (clickDelta <= -TRK_DROP) {
+    verdict = 'volume';
+  }
+  return { rClicks, bClicks, rCvr, bCvr, clickDelta, cvrDelta, verdict };
+}
+
+/* ── Agrégations ───────────────────────────────────────────────────────────── */
+
+/** Totaux par entité (compte ou marché) sur un intervalle d'index de dates. */
+function trkTotalsBy(dim, from, to) {
+  const t = S.tracking;
+  const allowed = selectedTrackingAccounts();
+  const out = new Map();
+  if (dim === 'market') {
+    for (const r of t.market) {
+      if (r[TM.DATE] < from || r[TM.DATE] > to) continue;
+      if (allowed && !allowed.has(r[TM.ACC])) continue;
+      const k = r[TM.MARKET];
+      let slot = out.get(k);
+      if (!slot) out.set(k, (slot = emptyT()));
+      addT(slot, 0, r[TM.CLICKS], r[TM.COST], r[TM.CONV], r[TM.ALL], r[TM.VALUE]);
+    }
+  } else {
+    for (const r of t.daily) {
+      if (r[TD.DATE] < from || r[TD.DATE] > to) continue;
+      if (allowed && !allowed.has(r[TD.ACC])) continue;
+      const k = r[TD.ACC];
+      let slot = out.get(k);
+      if (!slot) out.set(k, (slot = emptyT()));
+      addT(slot, r[TD.IMPR], r[TD.CLICKS], r[TD.COST], r[TD.CONV], r[TD.ALL], r[TD.VALUE]);
+    }
+  }
+  return out;
+}
+
+/**
+ * Noms de pays, côté interface.
+ *
+ * Le portefeuille livre dans vingt-deux pays, dont une majorité de territoires
+ * d'outre-mer que le récupérateur ne connaissait pas : « RE » et « MQ » ne
+ * disent rien à la lecture, « Réunion » et « Martinique » oui. La table vit ici
+ * plutôt que dans le JSON pour qu'un pays nouveau soit nommé sans réextraction.
+ */
+const MARKET_FR = {
+  FR: 'France', ES: 'Espagne', BE: 'Belgique', CH: 'Suisse', IT: 'Italie',
+  PT: 'Portugal', DE: 'Allemagne', GB: 'Royaume-Uni', NL: 'Pays-Bas',
+  LU: 'Luxembourg', MC: 'Monaco', PL: 'Pologne', BR: 'Brésil', CA: 'Canada',
+  US: 'États-Unis', RE: 'La Réunion', GP: 'Guadeloupe', MQ: 'Martinique',
+  GF: 'Guyane', YT: 'Mayotte', NC: 'Nouvelle-Calédonie',
+  PF: 'Polynésie française', PM: 'Saint-Pierre-et-Miquelon',
+  WF: 'Wallis-et-Futuna', BL: 'Saint-Barthélemy', SX: 'Saint-Martin',
+  VC: 'Saint-Vincent', MF: 'Saint-Martin', TF: 'Terres australes',
+  '?': 'Pays non résolu',
+};
+
+function trkEntityLabel(dim, key) {
+  const t = S.tracking;
+  if (dim === 'market') {
+    const code = t.markets[key];
+    return MARKET_FR[code] || (t.marketLabels && t.marketLabels[code]) || code || '?';
+  }
+  return (t.accounts[key] && t.accounts[key].name) || '?';
+}
+
+/** Séries journalières agrégées sur la sélection, pour la carte temporelle. */
+function trkDailySeries() {
+  const t = S.tracking;
+  const allowed = selectedTrackingAccounts();
+  const { lo, hi, ok } = trkWindow();
+  if (!ok) return null;
+  const byDate = new Map();
+  for (const r of t.daily) {
+    if (r[TD.DATE] < lo || r[TD.DATE] > hi) continue;
+    if (allowed && !allowed.has(r[TD.ACC])) continue;
+    let slot = byDate.get(r[TD.DATE]);
+    if (!slot) byDate.set(r[TD.DATE], (slot = emptyT()));
+    addT(slot, r[TD.IMPR], r[TD.CLICKS], r[TD.COST], r[TD.CONV], r[TD.ALL], r[TD.VALUE]);
+  }
+  return byDate;
+}
+
+/* ── Événements superposés ─────────────────────────────────────────────────── */
+
+/**
+ * Fusionne le Sheet des changements techniques et le journal Google Ads.
+ *
+ * Deux sources, deux natures : le Sheet dit ce qui a été déployé côté site et
+ * balises ; le journal Ads dit ce qui a bougé dans les comptes. Les mélanger sans
+ * les distinguer laisserait croire qu'un changement d'enchère et une republication
+ * de conteneur GTM ont le même statut de suspect.
+ *
+ * Le journal Ads est plafonné à 28 jours par l'API : au-delà, il n'existe pas, et
+ * l'absence de repère ancien ne veut pas dire absence de changement.
+ */
+function trkEvents() {
+  const t = S.tracking;
+  const out = [];
+  const allowed = selectedTrackingAccounts();
+  const accountNames = new Set(
+    (allowed ? [...allowed] : t.accounts.map((_, i) => i)).map((i) => t.accounts[i].name)
+  );
+
+  const cl = S.changelog;
+  if (cl && Array.isArray(cl.events)) {
+    for (const e of cl.events) {
+      if (e.date < S.start || e.date > S.end) continue;
+      // Un événement qui nomme des comptes ne concerne que ceux-là. Sans compte
+      // nommé, il vaut pour tout le portefeuille.
+      if (e.accounts && e.accounts.length
+          && !e.accounts.some((n) => accountNames.has(n))) continue;
+      out.push({
+        date: e.date, source: 'sheet', type: e.type || 'AUTRE',
+        title: e.title, detail: e.detail || '',
+        accounts: e.accounts || [], markets: e.markets || [],
+        impact: e.impact || '',
+      });
+    }
+  }
+  return out;
+}
+
+/** Changements Google Ads agrégés par jour sur la sélection. */
+function trkAdsChanges() {
+  const t = S.tracking;
+  const allowed = selectedTrackingAccounts();
+  const byDate = new Map();
+  for (const r of t.changes) {
+    if (allowed && !allowed.has(r[TC.ACC])) continue;
+    const d = t.dates[r[TC.DATE]];
+    if (!d || d < S.start || d > S.end) continue;
+    let slot = byDate.get(d);
+    if (!slot) byDate.set(d, (slot = { total: 0, types: new Map() }));
+    slot.total += r[TC.COUNT];
+    const label = ADS_CHANGE_LABELS[r[TC.TYPE]] || r[TC.TYPE];
+    slot.types.set(label, (slot.types.get(label) || 0) + r[TC.COUNT]);
+  }
+  return byDate;
+}
+
+/* ── Rendu : indicateurs ───────────────────────────────────────────────────── */
+
+function renderTrkKpis(rows) {
+  const t = S.tracking;
+  els.trkKpi.replaceChildren();
+
+  const tile = (label, value, foot, note) => {
+    const box = document.createElement('div');
+    box.className = 'kpi';
+    const l = document.createElement('div');
+    l.className = 'kpi__label';
+    l.textContent = label;
+    box.appendChild(l);
+    const v = document.createElement('div');
+    v.className = 'kpi__value';
+    v.textContent = value;
+    box.appendChild(v);
+    if (foot) {
+      const f = document.createElement('div');
+      f.className = 'kpi__foot';
+      const d = document.createElement('span');
+      d.className = 'kpi__delta kpi__delta--flat';
+      d.textContent = foot;
+      f.appendChild(d);
+      box.appendChild(f);
+    }
+    if (note) {
+      const n = document.createElement('div');
+      n.className = 'kpi__note';
+      n.textContent = note;
+      box.appendChild(n);
+    }
+    els.trkKpi.appendChild(box);
+  };
+
+  const alerts = rows.filter((r) => r.verdict === 'break' || r.verdict === 'measure');
+  const costAtRisk = alerts.reduce((s, r) => s + r.recent.cost, 0);
+  const totalAll = rows.reduce((s, r) => s + r.recent.all + r.base.all, 0);
+  const totalConv = rows.reduce((s, r) => s + r.recent.conv + r.base.conv, 0);
+
+  tile('Entités surveillées', fmtInt(rows.length),
+    `${rows.filter((r) => r.verdict === 'thin').length} sous le seuil de trafic`,
+    `au moins ${TRK_MIN_CLICKS} clics sur la référence pour être diagnostiquées`);
+
+  tile('Mesure en cause', fmtInt(alerts.length),
+    alerts.length ? `${fmtMoney(costAtRisk, { compact: true })} dépensés sur ${TRK_RECENT_DAYS} j`
+                  : 'aucune alerte sur cette sélection',
+    alerts.length ? 'dépense engagée pendant que la mesure est douteuse'
+                  : 'taux de conversion et trafic évoluent ensemble partout');
+
+  tile('Conversions vues par les enchères',
+    fmtPct(totalAll ? totalConv / totalAll : NaN),
+    `${fmtNum1(totalConv)} sur ${fmtNum1(totalAll)}`,
+    'part des conversions incluses dans la colonne « Conversions » — le reste est '
+    + 'suivi mais n\'optimise rien');
+
+  const silent = S.trkSilent || [];
+  tile('Actions muettes', fmtInt(silent.length),
+    silent.length ? `la plus ancienne depuis ${Math.max(...silent.map((s) => s.days))} j`
+                  : 'aucune action à l\'arrêt',
+    `action ayant converti puis silencieuse ${TRK_SILENCE_MIN} jours ou plus`);
+}
+
+/* ── Rendu : diagnostic ────────────────────────────────────────────────────── */
+
+function trkDiagRows() {
+  const b = trkBlocks();
+  if (!b) return { rows: [], blocks: null };
+  const dim = S.trkDim;
+  const recent = trkTotalsBy(dim, b.recentFrom, b.recentTo);
+  const base = trkTotalsBy(dim, b.baseFrom, b.baseTo);
+
+  const keys = new Set([...recent.keys(), ...base.keys()]);
+  const rows = [];
+  // Les marchés minuscules sont repliés en un seul : le portefeuille livre dans
+  // vingt-deux pays, dont une quinzaine de territoires à quelques dizaines de
+  // clics. Les lister un par un noierait FR, ES et BE sous du bruit ; les
+  // supprimer ferait un total faux. Le repli est annoncé sous le titre.
+  const folded = [];
+  let fold = null;
+  for (const k of keys) {
+    const r = recent.get(k) || emptyT();
+    const p = base.get(k) || emptyT();
+    if (!r.clicks && !p.clicks) continue;
+    if (dim === 'market' && r.clicks + p.clicks < TRK_MIN_CLICKS) {
+      if (!fold) fold = { recent: emptyT(), base: emptyT() };
+      addT(fold.recent, r.impr, r.clicks, r.cost, r.conv, r.all, r.value);
+      addT(fold.base, p.impr, p.clicks, p.cost, p.conv, p.all, p.value);
+      folded.push(trkEntityLabel(dim, k));
+      continue;
+    }
+    const d = trkDiagnose(r, p, b.recentDays, b.baseDays);
+    rows.push({ key: k, label: trkEntityLabel(dim, k), recent: r, base: p, ...d });
+  }
+  if (fold) {
+    const d = trkDiagnose(fold.recent, fold.base, b.recentDays, b.baseDays);
+    rows.push({
+      key: '__fold__', label: `Autres marchés (${folded.length})`,
+      recent: fold.recent, base: fold.base, folded, ...d,
+    });
+  }
+  rows.sort((a, z) => {
+    const ra = TRK_VERDICTS[a.verdict].rank;
+    const rz = TRK_VERDICTS[z.verdict].rank;
+    if (ra !== rz) return ra - rz;
+    return z.recent.cost - a.recent.cost;
+  });
+  return { rows, blocks: b, folded };
+}
+
+function renderTrkDiag(rows, b, folded) {
+  const t = S.tracking;
+  const dim = S.trkDim;
+
+  if (!b) {
+    els.trkDiagSub.textContent = '';
+    els.trkDiagNote.hidden = true;
+    emptyState(els.trkDiagBody,
+      `Période trop courte : il faut au moins ${TRK_RECENT_DAYS + 7} jours pour comparer `
+      + `une semaine récente à une référence.`);
+    return;
+  }
+
+  const fmtRange = (from, to) => `${fmtDateShort(t.dates[from])} – ${fmtDateShort(t.dates[to])}`;
+  els.trkDiagSub.textContent =
+    `${b.recentDays} derniers jours (${fmtRange(b.recentFrom, b.recentTo)}) face aux `
+    + `${b.baseDays} précédents (${fmtRange(b.baseFrom, b.baseTo)}) · `
+    + `taux = conversions toutes actions / clic · seuils : baisse ${fmtPct(TRK_DROP)}, `
+    + `trafic stable à ±${fmtPct(TRK_STABLE)} · ${dim === 'market' ? 'par pays de livraison réelle' : 'par compte'}`
+    + (folded && folded.length
+      ? ` · ${folded.length} marché(s) sous ${TRK_MIN_CLICKS} clics repliés : ${folded.join(', ')}`
+      : '');
+
+  const alerts = rows.filter((r) => r.verdict === 'break' || r.verdict === 'measure');
+  els.trkDiagNote.replaceChildren();
+  if (alerts.length) {
+    const strong = document.createElement('strong');
+    strong.textContent = alerts.length === 1
+      ? 'Une entité à vérifier côté mesure.'
+      : `${alerts.length} entités à vérifier côté mesure.`;
+    els.trkDiagNote.appendChild(strong);
+    const span = document.createElement('span');
+    span.textContent = alerts.map((r) =>
+      `${r.label} (${TRK_VERDICTS[r.verdict].label.toLowerCase()}, taux ${
+        r.cvrDelta >= 0 ? '+' : '−'}${fmtPct(Math.abs(r.cvrDelta))} pour un trafic ${
+        r.clickDelta >= 0 ? '+' : '−'}${fmtPct(Math.abs(r.clickDelta))})`).join(' · ')
+      + '. Un taux qui chute sans que le trafic bouge ne s\'explique pas par le marché.';
+    els.trkDiagNote.appendChild(span);
+    els.trkDiagNote.hidden = false;
+  } else {
+    els.trkDiagNote.hidden = true;
+  }
+
+  if (!rows.length) {
+    emptyState(els.trkDiagBody, 'Aucune donnée sur cette sélection.');
+    return;
+  }
+
+  if (S.views.trkdiag === 'table') {
+    renderTable(els.trkDiagBody, {
+      scroll: true,
+      caption: 'Diagnostic de mesure par entité',
+      cols: [
+        { key: 'label', label: dim === 'market' ? 'Marché' : 'Compte', text: true },
+        { key: 'verdictLabel', label: 'Verdict', text: true },
+        { key: 'cvrDelta', label: 'Δ taux de conv.', fmt: (v) => trkSigned(v) },
+        { key: 'clickDelta', label: 'Δ clics', fmt: (v) => trkSigned(v) },
+        { key: 'rCvr', label: 'Taux récent', fmt: (v) => fmtPct(v) },
+        { key: 'bCvr', label: 'Taux référence', fmt: (v) => fmtPct(v) },
+        { key: 'rClicks', label: 'Clics / j', fmt: (v) => fmtInt(v) },
+        { key: 'cost', label: `Coût ${b.recentDays} j`, fmt: fmtMoney },
+      ],
+      rows: rows.map((r) => ({
+        label: r.label,
+        _swatch: trkVerdictColor(r.verdict),
+        _sub: TRK_VERDICTS[r.verdict].hint,
+        verdictLabel: TRK_VERDICTS[r.verdict].label,
+        cvrDelta: r.cvrDelta, clickDelta: r.clickDelta,
+        rCvr: r.rCvr, bCvr: r.bCvr, rClicks: r.rClicks,
+        cost: r.recent.cost,
+      })),
+    });
+    return;
+  }
+
+  // Barres divergentes sur la variation du taux de conversion : c'est le signal
+  // de mesure. Le trafic reste dans l'infobulle et dans le tableau — le porter
+  // sur le même graphique en ferait un double axe déguisé.
+  // Le graphique se lit de la pire variation à la meilleure ; le tableau garde
+  // l'ordre des verdicts, qui répond à « par quoi je commence ».
+  const shown = rows
+    .filter((r) => r.verdict !== 'thin' && isFinite(r.cvrDelta))
+    .sort((a, z) => a.cvrDelta - z.cvrDelta)
+    .slice(0, 16);
+  if (!shown.length) {
+    emptyState(els.trkDiagBody,
+      `Aucune entité n'atteint ${TRK_MIN_CLICKS} clics sur la période de référence. `
+      + `Le tableau les liste toutes.`);
+    return;
+  }
+  renderDivergingBars(els.trkDiagBody, {
+    rows: shown.map((r) => ({
+      label: r.label,
+      recent: r.rCvr, prev: r.bCvr, delta: r.cvrDelta,
+      examples: [TRK_VERDICTS[r.verdict].label],
+      clickDelta: r.clickDelta,
+    })),
+    fmt: (v) => fmtPct(v),
+    upLabel: 'Taux en hausse', downLabel: 'Taux en baisse',
+    axisLeft: 'taux en baisse ←', axisRight: '→ taux en hausse',
+    tipRows: (r) => [
+      { name: 'Taux récent', value: fmtPct(r.recent), color: seriesColor(1) },
+      { name: 'Taux de référence', value: fmtPct(r.prev), color: seriesColor(8) },
+      { name: 'Δ clics', value: trkSigned(r.clickDelta) },
+      { name: 'Verdict', value: r.examples[0], total: true },
+    ],
+    ariaLabel: 'Variation du taux de conversion par entité',
+  });
+}
+
+function trkSigned(v) {
+  if (!isFinite(v)) return '—';
+  return (v >= 0 ? '+' : '−') + fmtPct(Math.abs(v));
+}
+
+/* ── Rendu : actions muettes ───────────────────────────────────────────────── */
+
+/**
+ * Une action qui a converti puis s'est tue, alors que le compte reçoit toujours
+ * des clics. C'est la signature d'une balise cassée, et le cas le plus coûteux :
+ * les enchères continuent d'optimiser sur un signal disparu.
+ */
+function trkSilentActions() {
+  const t = S.tracking;
+  const { lo, hi, ok } = trkWindow();
+  if (!ok) return [];
+  const allowed = selectedTrackingAccounts();
+
+  // (compte, action) → dernier jour converti, total, premier jour vu
+  const seen = new Map();
+  for (const r of t.series) {
+    if (r[TS.DATE] < lo || r[TS.DATE] > hi) continue;
+    if (allowed && !allowed.has(r[TS.ACC])) continue;
+    if (!r[TS.ALL]) continue;
+    const k = `${r[TS.ACC]}|${r[TS.ACTION]}`;
+    let s = seen.get(k);
+    if (!s) seen.set(k, (s = { acc: r[TS.ACC], action: r[TS.ACTION], last: -1, first: 1e9, total: 0, days: 0 }));
+    s.total += r[TS.ALL];
+    s.days += 1;
+    if (r[TS.DATE] > s.last) s.last = r[TS.DATE];
+    if (r[TS.DATE] < s.first) s.first = r[TS.DATE];
+  }
+
+  // Clics par compte et par jour, pour vérifier que le compte tourne encore.
+  const clicksByAccDate = new Map();
+  for (const r of t.daily) {
+    if (r[TD.DATE] < lo || r[TD.DATE] > hi) continue;
+    if (allowed && !allowed.has(r[TD.ACC])) continue;
+    clicksByAccDate.set(`${r[TD.ACC]}|${r[TD.DATE]}`, r[TD.CLICKS]);
+  }
+  const clicksSince = (acc, from) => {
+    let n = 0;
+    for (let d = from; d <= hi; d++) n += clicksByAccDate.get(`${acc}|${d}`) || 0;
+    return n;
+  };
+  const costSince = new Map();
+  for (const r of t.daily) {
+    if (r[TD.DATE] < lo || r[TD.DATE] > hi) continue;
+    if (allowed && !allowed.has(r[TD.ACC])) continue;
+    costSince.set(`${r[TD.ACC]}|${r[TD.DATE]}`, r[TD.COST]);
+  }
+
+  const out = [];
+  for (const s of seen.values()) {
+    const silence = hi - s.last;
+    if (silence < TRK_SILENCE_MIN) continue;
+    if (s.total < TRK_MIN_CONV) continue;   // trop peu vu pour qu'un silence parle
+    const clicks = clicksSince(s.acc, s.last + 1);
+    if (!clicks) continue;                  // compte à l'arrêt : ce n'est pas la balise
+    let cost = 0;
+    for (let d = s.last + 1; d <= hi; d++) cost += costSince.get(`${s.acc}|${d}`) || 0;
+    out.push({
+      account: t.accounts[s.acc].name,
+      action: t.actions[s.action],
+      last: t.dates[s.last],
+      days: silence,
+      perDay: s.total / Math.max(1, s.days),
+      total: s.total,
+      clicks,
+      cost,
+    });
+  }
+  out.sort((a, b) => b.cost - a.cost || b.days - a.days);
+  return out;
+}
+
+function renderTrkSilent(list) {
+  els.trkSilentSub.textContent =
+    `Actions ayant converti au moins ${TRK_MIN_CONV} fois sur la période, puis silencieuses `
+    + `${TRK_SILENCE_MIN} jours ou plus alors que le compte recevait encore des clics · `
+    + `classées par dépense engagée depuis le silence`;
+
+  if (!list.length) {
+    emptyState(els.trkSilentBody,
+      'Aucune action muette sur cette sélection : chaque action qui a converti '
+      + 'converti encore.');
+    return;
+  }
+
+  renderTable(els.trkSilentBody, {
+    scroll: true,
+    caption: 'Actions de conversion silencieuses',
+    cols: [
+      { key: 'action', label: 'Action de conversion', text: true },
+      { key: 'last', label: 'Dernière conversion', text: true },
+      { key: 'days', label: 'Jours de silence', fmt: fmtInt },
+      { key: 'perDay', label: 'Conv. / j avant', fmt: fmtNum1 },
+      { key: 'clicks', label: 'Clics depuis', fmt: fmtInt },
+      { key: 'cost', label: 'Coût depuis', fmt: fmtMoney },
+    ],
+    rows: list.map((r) => ({
+      action: r.action,
+      _sub: r.account,
+      _swatch: trkVerdictColor(r.days >= 7 ? 'break' : 'measure'),
+      last: fmtDateShort(r.last),
+      days: r.days, perDay: r.perDay, clicks: r.clicks, cost: r.cost,
+    })),
+    foot: {
+      action: `Total — ${list.length} action(s)`,
+      cost: list.reduce((s, r) => s + r.cost, 0),
+      clicks: list.reduce((s, r) => s + r.clicks, 0),
+    },
+  });
+}
+
+/* ── Rendu : conversions face aux clics ────────────────────────────────────── */
+
+function renderTrkTime() {
+  const t = S.tracking;
+  const byDate = trkDailySeries();
+  const { lo, hi, ok } = trkWindow();
+  if (!ok || !byDate || !byDate.size) {
+    els.trkTimeSub.textContent = '';
+    els.trkTimeLegend.textContent = '';
+    emptyState(els.trkTimeBody, 'Aucune donnée sur cette sélection.');
+    return;
+  }
+
+  const grain = S.trkGrain;
+  const share = S.trkScale === 'index';
+  const buckets = new Map();
+  for (let d = lo; d <= hi; d++) {
+    const slot = byDate.get(d);
+    if (!slot) continue;
+    const k = grainKey(t.dates[d], grain);
+    let b = buckets.get(k);
+    if (!b) buckets.set(k, (b = { ...emptyT(), first: t.dates[d], days: 0 }));
+    b.days += 1;
+    addT(b, slot.impr, slot.clicks, slot.cost, slot.conv, slot.all, slot.value);
+  }
+  let keys = [...buckets.keys()].sort();
+  if (!keys.length) {
+    emptyState(els.trkTimeBody, 'Aucune donnée sur cette sélection.');
+    return;
+  }
+
+  // Périodes partielles aux deux bouts : une fenêtre de 90 jours commence et
+  // finit rarement un lundi. Sur une base 100, une première semaine tronquée
+  // sert de référence à tout le reste, et une dernière semaine d'un seul jour
+  // ressemble à un effondrement. Les deux sont écartées du graphique — et le
+  // tableau les garde, marquées « partiel ».
+  const expectedDays = (k) => {
+    if (grain === 'day') return 1;
+    if (grain === 'week') return 7;
+    const [y, m] = k.split('-').map(Number);
+    return new Date(y, m, 0).getDate();
+  };
+  const partial = new Set(keys.filter((k, i) =>
+    (i === 0 || i === keys.length - 1) && buckets.get(k).days < expectedDays(k)));
+  const chartKeys = keys.filter((k) => !partial.has(k));
+  const partialLabels = [...partial].map((k) => grainLabel(k, grain));
+
+  const clicks = chartKeys.map((k) => buckets.get(k).clicks);
+  const conv = chartKeys.map((k) => buckets.get(k).all);
+  const cvr = chartKeys.map((k) => {
+    const b = buckets.get(k);
+    return b.clicks ? b.all / b.clicks : null;
+  });
+
+  // Base 100 sur la première période : c'est la seule façon de mettre des clics
+  // (dizaines de milliers) et un taux (quelques pourcents) sur une même échelle
+  // sans double axe. La vue « valeurs » garde les grandeurs brutes, sur deux
+  // cartes de tableau plutôt qu'un axe truqué.
+  const idx = (arr) => {
+    const base = arr.find((v) => v !== null && isFinite(v) && v > 0);
+    return base ? arr.map((v) => (v === null || !isFinite(v) ? null : v / base * 100)) : arr;
+  };
+
+  const series = share
+    ? [
+      { key: 'clicks', name: 'Clics', color: seriesColor(1), values: idx(clicks) },
+      { key: 'conv', name: 'Conversions', color: seriesColor(3), values: idx(conv) },
+      { key: 'cvr', name: 'Taux de conversion', color: seriesColor(2), values: idx(cvr) },
+    ]
+    : [
+      { key: 'clicks', name: 'Clics', color: seriesColor(1), values: clicks },
+      { key: 'conv', name: 'Conversions', color: seriesColor(3), values: conv },
+    ];
+
+  // Repères : un par événement du Sheet, plus les journées de forte activité
+  // dans le journal Google Ads.
+  const events = trkEvents();
+  const adsChanges = trkAdsChanges();
+  const posOf = (iso) => chartKeys.indexOf(grainKey(iso, grain));
+
+  const vmarks = [];
+  const legend = [];
+  events.forEach((e) => {
+    const at = posOf(e.date);
+    if (at < 0) return;
+    const n = vmarks.length + 1;
+    vmarks.push({
+      at, label: `${n}. ${e.title}`, tick: String(n),
+      color: seriesColor(CHANGE_TYPE_SLOT[e.type] || 6),
+      tipValue: fmtDateShort(e.date),
+    });
+    legend.push(`${n}. ${fmtDateShort(e.date)} — ${e.title}`);
+  });
+
+  els.trkTimeSub.textContent =
+    (share
+      ? 'Base 100 sur la première période : clics, conversions et taux sur une seule échelle'
+      : 'Volumes bruts — le taux de conversion vit dans la carte de diagnostic, pas sur un second axe')
+    + ` · ${grain === 'day' ? 'par jour' : grain === 'week' ? 'par semaine' : 'par mois'}`
+    + (vmarks.length ? ` · ${vmarks.length} changement(s) repéré(s)` : ' · aucun changement déclaré sur la période')
+    + (partialLabels.length
+      ? ` · période(s) partielle(s) écartée(s) du graphique : ${partialLabels.join(', ')}`
+      : '');
+
+  if (S.views.trktime === 'table') {
+    renderTable(els.trkTimeBody, {
+      scroll: true,
+      caption: 'Clics, conversions et taux par période',
+      cols: [
+        { key: 'k', label: grain === 'month' ? 'Mois' : grain === 'week' ? 'Semaine' : 'Jour', text: true },
+        { key: 'clicks', label: 'Clics', fmt: fmtInt },
+        { key: 'conv', label: 'Conversions', fmt: fmtNum1 },
+        { key: 'cvr', label: 'Taux', fmt: (v) => fmtPct(v) },
+        { key: 'cost', label: 'Coût', fmt: fmtMoney },
+        { key: 'events', label: 'Changements', text: true },
+      ],
+      rows: keys.map((k) => {
+        const b = buckets.get(k);
+        const evs = events.filter((e) => grainKey(e.date, grain) === k).map((e) => e.title);
+        const ads = [...adsChanges.entries()]
+          .filter(([d]) => grainKey(d, grain) === k)
+          .reduce((s, [, v]) => s + v.total, 0);
+        const bits = [...evs];
+        if (ads) bits.push(`${ads} modif. Google Ads`);
+        return {
+          k: grainLabel(k, grain) + (partial.has(k) ? ' (partiel)' : ''),
+          clicks: b.clicks, conv: b.all, cvr: b.clicks ? b.all / b.clicks : NaN,
+          cost: b.cost, events: bits.join(' · ') || '—',
+        };
+      }),
+    });
+    els.trkTimeLegend.textContent = '';
+    return;
+  }
+
+  renderLineChart(els.trkTimeBody, {
+    xLabels: chartKeys.map((k) => grainLabel(k, grain)),
+    series,
+    fmt: share ? ((v) => `${nf0.format(v)}`) : fmtInt,
+    endLabel: true,
+    height: 320,
+    summable: false,
+    vmarks,
+    ariaLabel: 'Clics et conversions dans le temps, avec les changements techniques',
+  });
+
+  els.trkTimeLegend.textContent = legend.length
+    ? `Repères : ${legend.join(' · ')}`
+    : (S.changelogState === 'ready'
+      ? 'Aucun changement technique déclaré sur cette période.'
+      : 'Aucun journal de changements chargé : renseignez data/changelog.json pour '
+        + 'superposer les déploiements GTM, Didomi et conteneurs.');
+}
+
+/* ── Rendu : consentement ──────────────────────────────────────────────────── */
+
+function renderTrkConsent() {
+  const cl = S.changelog;
+  const pts = (cl && cl.consent ? cl.consent : [])
+    .filter((p) => p.date >= S.start && p.date <= S.end)
+    .sort((a, b) => a.date.localeCompare(b.date));
+
+  // Pas de donnée = carte masquée. Une carte vide laisserait croire à un bug,
+  // alors que la cause est ailleurs : Google Ads n'expose pas le consentement.
+  els.trkConsentCard.hidden = !pts.length;
+  if (!pts.length) return;
+
+  els.trkConsentSub.textContent =
+    `${pts.length} relevé(s) issus de la CMP, via data/changelog.json · `
+    + `l'API Google Ads n'expose aucun taux de consentement`;
+
+  if (S.views.trkconsent === 'table') {
+    renderTable(els.trkConsentBody, {
+      caption: 'Taux de consentement relevés',
+      cols: [
+        { key: 'date', label: 'Date', text: true },
+        { key: 'rate', label: 'Consentement', fmt: (v) => fmtPct(v) },
+        { key: 'scope', label: 'Périmètre', text: true },
+      ],
+      rows: pts.map((p) => ({
+        date: fmtDateShort(p.date),
+        rate: p.rate,
+        scope: [...(p.markets || []), ...(p.accounts || [])].join(', ') || 'portefeuille',
+      })),
+    });
+    return;
+  }
+
+  renderLineChart(els.trkConsentBody, {
+    xLabels: pts.map((p) => fmtDateShort(p.date)),
+    series: [{
+      key: 'rate', name: 'Consentement', color: seriesColor(3),
+      values: pts.map((p) => p.rate * 100),
+    }],
+    fmt: (v) => `${nf1.format(v)} %`,
+    area: true,
+    height: 220,
+    summable: false,
+    ariaLabel: 'Taux de consentement dans le temps',
+  });
+}
+
+/* ── Rendu : retard de conversion ──────────────────────────────────────────── */
+
+function renderTrkLag() {
+  const t = S.tracking;
+  const allowed = selectedTrackingAccounts();
+  const share = S.trkLagScale === 'share';
+
+  const byMonth = new Map();
+  for (const r of t.lag) {
+    if (allowed && !allowed.has(r[TL.ACC])) continue;
+    const month = t.months[r[TL.MONTH]];
+    if (!month) continue;
+    // Le mois est comparé aux bornes de la période : un mois entamé compte, un
+    // mois hors fenêtre non.
+    if (month + '-31' < S.start || month + '-01' > S.end) continue;
+    let slot = byMonth.get(month);
+    if (!slot) byMonth.set(month, (slot = t.lagGroups.map(() => 0)));
+    slot[r[TL.GROUP]] += r[TL.ALL];
+  }
+
+  const months = [...byMonth.keys()].sort();
+  // Le mois en cours est mécaniquement faussé : une conversion à quinze jours de
+  // retard survenue cette semaine n'est pas encore arrivée. Sa part de « moins
+  // d'un jour » est donc artificiellement haute — ce n'est pas un tagging qui
+  // s'améliore, c'est une fenêtre qui se ferme trop tôt. Le dire, sinon la carte
+  // se lit à l'envers.
+  const lastMonth = months[months.length - 1];
+  const nowMonth = (S.tracking.meta && S.tracking.meta.date_end || '').slice(0, 7);
+  const truncated = lastMonth && lastMonth === nowMonth;
+  els.trkLagSub.textContent = (share
+    ? 'Profil du délai entre le clic et la conversion, chaque mois ramené à 100 %'
+    : 'Conversions par délai entre le clic et la conversion')
+    + (truncated
+      ? ` · ${fmtMonth(lastMonth)} est incomplet : les retards longs n'y sont pas encore `
+        + `arrivés, sa part de « moins d'un jour » est donc surévaluée`
+      : '');
+
+  if (!months.length) {
+    emptyState(els.trkLagBody, 'Aucune donnée de retard sur cette sélection.');
+    return;
+  }
+
+  const series = t.lagGroups.map((g, i) => ({
+    key: String(i), name: g, color: seriesColor(i + 1),
+  }));
+  const rows = months.map((m) => {
+    const slot = byMonth.get(m);
+    const values = {};
+    let total = 0;
+    slot.forEach((v, i) => { values[String(i)] = v; total += v; });
+    return { label: fmtMonth(m) + (m === lastMonth && truncated ? ' (partiel)' : ''),
+      values, total };
+  }).filter((r) => r.total > 0);
+
+  if (S.views.trklag === 'table') {
+    renderTable(els.trkLagBody, {
+      scroll: true,
+      caption: 'Retard de conversion par mois',
+      cols: [
+        { key: 'label', label: 'Mois', text: true },
+        ...series.map((s) => ({
+          key: s.key, label: s.name,
+          fmt: share ? ((v) => fmtPct(v || 0)) : ((v) => fmtNum1(v || 0)),
+        })),
+        { key: 'total', label: 'Total', fmt: fmtNum1 },
+      ],
+      rows: rows.map((r) => {
+        const out = { label: r.label, total: r.total };
+        for (const s of series) {
+          const v = r.values[s.key] || 0;
+          out[s.key] = share ? (r.total ? v / r.total : 0) : v;
+        }
+        return out;
+      }),
+    });
+    return;
+  }
+
+  renderStackedBars(els.trkLagBody, {
+    rows, series, fmt: fmtNum1, normalize: share,
+    ariaLabel: 'Retard de conversion par mois',
+  });
+}
+
+/* ── Rendu : journal des changements ──────────────────────────────────────── */
+
+function renderTrkLog() {
+  const t = S.tracking;
+  const events = trkEvents();
+  const adsChanges = trkAdsChanges();
+  const meta = t.meta || {};
+
+  const adsRows = [...adsChanges.entries()].map(([date, v]) => {
+    const top = [...v.types.entries()].sort((a, b) => b[1] - a[1]).slice(0, 3)
+      .map(([k, n]) => `${k} ×${n}`).join(', ');
+    return {
+      date, source: 'Google Ads', type: 'ADS',
+      title: `${v.total} modification(s) dans les comptes`,
+      detail: top,
+    };
+  });
+
+  const all = [...events.map((e) => ({
+    date: e.date, source: 'Sheet',
+    type: e.type,
+    title: e.title,
+    detail: [e.detail, e.accounts.join(', '), e.markets.join(', '),
+      e.impact ? `impact ${e.impact}` : ''].filter(Boolean).join(' · '),
+  })), ...adsRows].sort((a, b) => b.date.localeCompare(a.date));
+
+  const labels = (S.changelog && S.changelog.typeLabels) || {};
+  els.trkLogSub.textContent =
+    `${events.length} changement(s) déclarés dans le Sheet · `
+    + `${adsRows.length} journée(s) de modifications côté Google Ads · du plus récent au plus ancien`;
+
+  // Le plafond de l'API doit être dit : sans ça, un mois sans repère se lit comme
+  // « rien n'a bougé » alors qu'il signifie « l'API ne sait plus ».
+  els.trkLogNote.replaceChildren();
+  const notes = [];
+  // Un jeu d'exemple ne doit jamais passer pour des données réelles. Le
+  // récupérateur marque sa source ; l'interface le répète, faute de quoi cinq
+  // événements inventés se liraient comme cinq déploiements.
+  if (S.changelog && S.changelog.meta && S.changelog.meta.source === 'exemple') {
+    notes.push('Les changements listés viennent du JEU D\'EXEMPLE '
+      + '(scripts/fetch_changelog.py --sample), pas de votre Sheet : ce sont des événements '
+      + 'inventés pour vérifier l\'affichage.');
+  }
+  if (Array.isArray(S.changelog && S.changelog.meta && S.changelog.meta.skipped)
+      && S.changelog.meta.skipped.length) {
+    notes.push(`${S.changelog.meta.skipped.length} ligne(s) du Sheet ont été ignorées à `
+      + `l'extraction (${S.changelog.meta.skipped.slice(0, 4).join(', ')}) : date illisible `
+      + `ou titre vide.`);
+  }
+  if (meta.change_window_days) {
+    notes.push(`Le journal Google Ads ne remonte que ${meta.change_window_days} jours `
+      + `(limite de l'API, depuis le ${fmtDateLong(meta.change_start)}) : une période sans `
+      + `repère plus ancienne ne veut pas dire qu'aucun changement n'a eu lieu.`);
+  }
+  if (S.changelogState !== 'ready') {
+    notes.push('Aucun Sheet de changements chargé : seuls les changements internes à '
+      + 'Google Ads sont listés. Les déploiements GTM, Didomi et conteneurs viennent de '
+      + 'data/changelog.json.');
+  }
+  if (notes.length) {
+    const strong = document.createElement('strong');
+    strong.textContent = 'Portée du journal.';
+    els.trkLogNote.appendChild(strong);
+    const span = document.createElement('span');
+    span.textContent = notes.join(' ');
+    els.trkLogNote.appendChild(span);
+    els.trkLogNote.hidden = false;
+  } else {
+    els.trkLogNote.hidden = true;
+  }
+
+  if (!all.length) {
+    emptyState(els.trkLogBody, 'Aucun changement sur cette période.');
+    return;
+  }
+
+  renderTable(els.trkLogBody, {
+    scroll: true,
+    caption: 'Journal des changements techniques',
+    cols: [
+      { key: 'date', label: 'Date', text: true },
+      { key: 'kind', label: 'Nature', text: true },
+      { key: 'title', label: 'Changement', text: true },
+      { key: 'detail', label: 'Détail', text: true },
+      { key: 'source', label: 'Source', text: true },
+    ],
+    rows: all.slice(0, 120).map((e) => ({
+      date: fmtDateShort(e.date),
+      _swatch: seriesColor(CHANGE_TYPE_SLOT[e.type] || 6),
+      kind: labels[e.type] || e.type,
+      title: e.title,
+      detail: e.detail || '—',
+      source: e.source,
+    })),
+  });
+}
+
+/* ── Rendu : configuration du suivi ───────────────────────────────────────── */
+
+const TRK_STATUS_LABELS = {
+  CONVERSION_TRACKING_MANAGED_BY_SELF: 'Géré par le compte',
+  CONVERSION_TRACKING_MANAGED_BY_THIS_MANAGER: 'Géré par ce MCC',
+  CONVERSION_TRACKING_MANAGED_BY_ANOTHER_MANAGER: 'Géré par un autre MCC',
+  NOT_CONVERSION_TRACKED: 'Aucun suivi de conversion',
+  UNKNOWN: 'Inconnu', UNSPECIFIED: 'Non renseigné',
+};
+
+function renderTrkConfig() {
+  const t = S.tracking;
+  const allowed = selectedTrackingAccounts();
+  const rows = (t.config || []).filter((c) => !allowed || allowed.has(c.account));
+
+  // Un identifiant de conversion partagé par plusieurs comptes est normal sur un
+  // MCC ; un compte seul sur le sien mérite un œil, c'est souvent l'oubli d'une
+  // migration. On compte donc les occurrences plutôt que de juger.
+  const idCount = new Map();
+  for (const c of rows) {
+    const id = c.crossAccountId || c.trackingId || '';
+    if (id) idCount.set(id, (idCount.get(id) || 0) + 1);
+  }
+
+  const untracked = rows.filter((c) => c.status === 'NOT_CONVERSION_TRACKED').length;
+  els.trkConfigSub.textContent =
+    `${rows.length} compte(s) · ${idCount.size} identifiant(s) de conversion distinct(s)`
+    + (untracked ? ` · ${untracked} sans suivi` : '');
+
+  if (!rows.length) {
+    emptyState(els.trkConfigBody, 'Aucun compte sur cette sélection.');
+    return;
+  }
+
+  renderTable(els.trkConfigBody, {
+    scroll: true,
+    caption: 'Configuration du suivi de conversion par compte',
+    cols: [
+      { key: 'name', label: 'Compte', text: true },
+      { key: 'status', label: 'Suivi', text: true },
+      { key: 'id', label: 'Identifiant', text: true },
+      { key: 'shared', label: 'Comptes sur cet id', fmt: fmtInt },
+      { key: 'actions', label: 'Actions actives', fmt: fmtInt },
+      { key: 'primary', label: 'Principales', fmt: fmtInt },
+      { key: 'counted', label: 'Comptées', fmt: fmtInt },
+      { key: 'upload', label: 'Import hors ligne', fmt: fmtInt },
+      { key: 'auto', label: 'Suivi auto', text: true },
+    ],
+    rows: rows.map((c) => {
+      const id = c.crossAccountId || c.trackingId || '';
+      return {
+        name: (t.accounts[c.account] && t.accounts[c.account].name) || '?',
+        _sub: (t.accounts[c.account] && t.accounts[c.account].cid) || '',
+        _swatch: c.status === 'NOT_CONVERSION_TRACKED'
+          ? trkVerdictColor('break') : trkVerdictColor('stable'),
+        status: TRK_STATUS_LABELS[c.status] || c.status,
+        id: id || '—',
+        shared: idCount.get(id) || 0,
+        actions: c.actionsEnabled ?? 0,
+        primary: c.actionsPrimary ?? 0,
+        counted: c.actionsCounted ?? 0,
+        upload: c.actionsUpload ?? 0,
+        auto: c.autoTagging ? 'oui' : 'non',
+      };
+    }),
+  });
+}
+
+/* ── Orchestration ────────────────────────────────────────────────────────── */
+
+function renderTracking() {
+  if (S.trackingState !== 'ready') return;
+  resolveRange();
+  const t = S.tracking;
+  const meta = t.meta || {};
+
+  const scoped = selectedTrackingAccounts();
+  const nAcc = scoped ? scoped.size : t.accounts.length;
+  els.trkMeta.textContent =
+    `${fmtDateLong(S.start)} – ${fmtDateLong(S.end)} · `
+    + `${nAcc} compte(s) actif(s) sur ${meta.accounts_scanned || t.accounts.length} scannés · `
+    + `données disponibles du ${fmtDateLong(meta.date_start)} au ${fmtDateLong(meta.date_end)}`;
+  if (S.view === 'tracking') {
+    els.filterStatus.textContent =
+      `${fmtDateLong(S.start)} – ${fmtDateLong(S.end)} · ${nAcc} compte(s) · santé de la mesure`;
+  }
+
+  const { rows, blocks, folded } = trkDiagRows();
+  S.trkSilent = trkSilentActions();
+
+  renderTrkKpis(rows);
+  renderTrkDiag(rows, blocks, folded);
+  renderTrkSilent(S.trkSilent);
+  renderTrkTime();
+  renderTrkConsent();
+  renderTrkLag();
+  renderTrkLog();
+  renderTrkConfig();
+}
+
+/** Le bandeau qui dit ce que cet onglet ne peut pas savoir. */
+function renderTrkLimits() {
+  els.trkLimits.replaceChildren();
+  const strong = document.createElement('strong');
+  strong.textContent = 'Le Consent Mode n\'est pas dans l\'API Google Ads.';
+  els.trkLimits.appendChild(strong);
+  const span = document.createElement('span');
+  span.textContent =
+    'Sondé sur la v25 : aucun champ pour le taux granted / denied, aucun champ pour '
+    + 'séparer les conversions modélisées des conversions observées. Cet onglet mesure donc '
+    + 'la santé du tracking par ses effets — une balise cassée fait tomber les conversions '
+    + 'sans toucher aux clics. Le taux de consentement, lui, vient de la CMP via '
+    + 'data/changelog.json.';
+  els.trkLimits.appendChild(span);
+  els.trkLimits.hidden = false;
+}
+
+async function loadTracking() {
+  if (S.trackingState !== 'idle') return;
+  S.trackingState = 'loading';
+  renderTrkLimits();
+
+  // Le journal est facultatif : son absence ne doit pas empêcher le diagnostic.
+  loadChangelog();
+
+  try {
+    const res = await fetch('data/tracking.json', { cache: 'no-cache' });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    S.tracking = await res.json();
+  } catch (err) {
+    S.trackingState = 'error';
+    els.trkError.replaceChildren();
+    const s = document.createElement('strong');
+    s.textContent = 'Données de tracking indisponibles.';
+    els.trkError.appendChild(s);
+    const d = document.createElement('span');
+    d.textContent = `Impossible de charger data/tracking.json (${err.message}). `
+      + `Générez-le avec « python scripts/fetch_tracking.py ».`;
+    els.trkError.appendChild(d);
+    els.trkError.hidden = false;
+    return;
+  }
+  if (!S.tracking || !Array.isArray(S.tracking.daily) || !S.tracking.daily.length) {
+    S.trackingState = 'error';
+    els.trkError.replaceChildren();
+    const s = document.createElement('strong');
+    s.textContent = 'Fichier de tracking vide.';
+    els.trkError.appendChild(s);
+    els.trkError.hidden = false;
+    return;
+  }
+  S.trackingState = 'ready';
+  els.trkError.hidden = true;
+
+  buildSegmented(els.trkDiagDim,
+    [{ key: 'account', label: 'Comptes' }, { key: 'market', label: 'Marchés' }],
+    () => S.trkDim, (k) => { S.trkDim = k; renderTracking(); writeHash(); });
+
+  buildSegmented(els.trkTimeGrain,
+    [{ key: 'day', label: 'Jour' }, { key: 'week', label: 'Semaine' },
+     { key: 'month', label: 'Mois' }],
+    () => S.trkGrain, (k) => { S.trkGrain = k; renderTracking(); writeHash(); });
+
+  buildSegmented(els.trkTimeScale,
+    [{ key: 'index', label: 'Base 100' }, { key: 'volume', label: 'Volumes' }],
+    () => S.trkScale, (k) => { S.trkScale = k; renderTracking(); writeHash(); });
+
+  buildSegmented(els.trkLagScale,
+    [{ key: 'volume', label: 'Volume' }, { key: 'share', label: 'Base 100' }],
+    () => S.trkLagScale, (k) => { S.trkLagScale = k; renderTracking(); writeHash(); });
+
+  buildViewToggles();
+  renderTracking();
+}
+
+async function loadChangelog() {
+  if (S.changelogState !== 'idle') return;
+  S.changelogState = 'loading';
+  try {
+    const res = await fetch('data/changelog.json', { cache: 'no-cache' });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    S.changelog = await res.json();
+  } catch (err) {
+    // Absence de journal ≠ erreur : l'onglet fonctionne sans, et le dit.
+    S.changelogState = 'error';
+    console.info(`Journal des changements absent (${err.message}). `
+      + `Générez data/changelog.json avec « python scripts/fetch_changelog.py --sheet <ID> ».`);
+    return;
+  }
+  S.changelogState = 'ready';
+  if (S.trackingState === 'ready') renderTracking();
+}
+
 /* ── Navigation entre vues ────────────────────────────────────────────────── */
 
 function setView(view) {
   S.view = view;
   els.contenu.hidden = view !== 'report';
   els.viewLive.hidden = view !== 'live';
-  // La barre reste visible sur les deux vues : le filtre de comptes vaut
-  // partout. Seuls les contrôles sans objet sur le Live sont masqués — période,
-  // appareil, réseau et recherche de campagne n'y ont pas de sens, la vue
-  // portant sur la seule journée en cours.
+  els.viewTracking.hidden = view !== 'tracking';
+  // La barre reste visible sur les trois vues : le filtre de comptes vaut
+  // partout. Les contrôles sans objet ailleurs sont masqués — appareil, réseau
+  // et recherche de campagne ne cadrent que le rapport ; la période cadre aussi
+  // le Tracking, mais pas le Live qui porte sur la seule journée en cours.
   els.filterbar.hidden = false;
   for (const n of document.querySelectorAll('[data-report-only]')) {
     n.hidden = view !== 'report';
+  }
+  for (const n of document.querySelectorAll('[data-no-live]')) {
+    n.hidden = view === 'live';
   }
   els.filterAction.hidden = view !== 'live';
   for (const b of els.viewTabs.querySelectorAll('button')) {
@@ -5711,10 +6977,16 @@ function setView(view) {
   }
   writeHash();
   if (view === 'live' && S.liveState === 'idle') loadLive();
+  if (view === 'tracking' && S.trackingState === 'idle') loadTracking();
   // Les SVG sont dimensionnés sur une largeur mesurée : un conteneur masqué
   // mesure zéro, il faut redessiner en revenant sur la vue.
   if (view === 'report') render();
-  else if (S.liveState === 'ready') renderLive();
+  else if (view === 'tracking') {
+    if (S.trackingState === 'ready') renderTracking();
+    els.filterStatus.textContent = S.trackingState === 'ready'
+      ? `${fmtDateLong(S.start)} – ${fmtDateLong(S.end)} · santé de la mesure`
+      : 'Signaux de tracking en cours de chargement…';
+  } else if (S.liveState === 'ready') renderLive();
   else els.filterStatus.textContent = 'Direct en cours de chargement…';
 
   updateLiveAutoRefresh();
@@ -5825,6 +7097,19 @@ function cacheEls() {
     contenu: 'contenu', viewLive: 'view-live', viewTabs: 'view-tabs',
     genderSection: 'gender-section', genderSub: 'gender-sub',
     genderNote: 'gender-note', genderScale: 'gender-scale', genderBody: 'gender-body',
+    viewTracking: 'view-tracking', trkError: 'trk-error', trkLimits: 'trk-limits',
+    trkMeta: 'trk-meta', trkKpi: 'trk-kpi',
+    trkDiagDim: 'trk-diag-dim', trkDiagSub: 'trk-diag-sub',
+    trkDiagNote: 'trk-diag-note', trkDiagBody: 'trk-diag-body',
+    trkSilentSub: 'trk-silent-sub', trkSilentBody: 'trk-silent-body',
+    trkTimeGrain: 'trk-time-grain', trkTimeScale: 'trk-time-scale',
+    trkTimeSub: 'trk-time-sub', trkTimeBody: 'trk-time-body',
+    trkTimeLegend: 'trk-time-legend',
+    trkConsentCard: 'trk-consent-card', trkConsentSub: 'trk-consent-sub',
+    trkConsentBody: 'trk-consent-body',
+    trkLagScale: 'trk-lag-scale', trkLagSub: 'trk-lag-sub', trkLagBody: 'trk-lag-body',
+    trkLogSub: 'trk-log-sub', trkLogNote: 'trk-log-note', trkLogBody: 'trk-log-body',
+    trkConfigSub: 'trk-config-sub', trkConfigBody: 'trk-config-body',
     filterbar: 'filterbar',
     liveError: 'live-error', liveTz: 'live-tz', liveAlertSlot: 'live-alert-slot',
     liveMeta: 'live-meta', liveKpi: 'live-kpi',
@@ -5855,12 +7140,25 @@ function showFatal(message) {
 
 function wireControls() {
   buildSegmented(els.viewTabs,
-    [{ key: 'report', label: 'Rapport' }, { key: 'live', label: 'Live' }],
+    [{ key: 'report', label: 'Rapport' }, { key: 'live', label: 'Live' },
+     { key: 'tracking', label: 'Tracking' }],
     () => S.view, setView);
+
+  // La période cadre le rapport et le Tracking : le redessin doit suivre la vue
+  // affichée, sinon changer de période sur le Tracking ne fait rien de visible.
+  const refreshPeriod = () => {
+    if (S.view === 'tracking') {
+      renderTracking();
+      updateFilterSummaries();
+      writeHash();
+      return;
+    }
+    render();
+  };
 
   buildSegmented(els.rangePresets, RANGE_PRESETS, () => S.range, (k) => {
     S.range = k;
-    render();
+    refreshPeriod();
   });
 
   els.rangeApply.addEventListener('click', () => {
@@ -5871,7 +7169,7 @@ function wireControls() {
     S.start = s <= e ? s : e;
     S.end = s <= e ? e : s;
     els.rangeCustomWrap.open = false;
-    render();
+    refreshPeriod();
   });
 
   fillSelect(els.tsMetric, TS_METRICS, S.tsMetric);

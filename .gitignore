@@ -22,6 +22,17 @@ data/terms.json
 # explicite pour les publier : git add -f data/aimax.json
 data/aimax.json
 
+# ── Journal des changements techniques ──────────────────────────────────────
+# changelog.json vient d'un Google Sheet rempli à la main. Deux raisons de ne
+# pas le committer depuis un poste :
+#   · « --sample » produit des événements INVENTÉS, qui passeraient pour des
+#     déploiements réels sur la page publique ;
+#   · un Sheet peut contenir des URL de conteneur ou des noms de personnes, que
+#     ce dépôt public exposerait.
+# Le workflow, lui, le régénère depuis le Sheet et le committe : c'est la seule
+# voie où le contenu est celui du Sheet et rien d'autre.
+data/changelog.json
+
 # ── Python ──────────────────────────────────────────────────────────────────
 __pycache__/
 *.py[cod]

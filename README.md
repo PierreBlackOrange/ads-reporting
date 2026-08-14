@@ -169,6 +169,152 @@ le publier délibérément : `git add -f data/aimax.json`.
 
 ---
 
+## Onglet Tracking / Consent Mode
+
+`#vue=tracking`, alimenté par `data/tracking.json`
+(`python scripts/fetch_tracking.py`) et, facultativement, par
+`data/changelog.json` (`python scripts/fetch_changelog.py`). Chargé à l'ouverture
+de l'onglet.
+
+### ⚠️ Ce que l'API Google Ads ne sait pas
+
+Sondé sur la v25 avant d'écrire une ligne d'interface :
+
+| Demandé | Réponse de l'API |
+|---|---|
+| Taux de Consent Mode granted / denied | **`%consent%` → 0 champ** |
+| Conversions modélisées vs observées | **`%model%led%` → 0 champ** |
+
+Ces deux données existent dans la CMP (Didomi), dans GTM et dans GA4 — pas dans
+Google Ads. Afficher « 98 % de consentement » à partir de rien serait le pire
+service à rendre à quelqu'un qui cherche une cassure de mesure, donc l'onglet ne
+le fait pas. Il mesure le tracking par ses **effets**, et le dit dans un bandeau
+permanent.
+
+Le taux de consentement s'affiche quand vous le fournissez, via la colonne
+`consent_rate` du Sheet (voir plus bas). Il vient de là, jamais d'ici.
+
+### Le raisonnement
+
+Une cassure de balise fait tomber les conversions **sans toucher aux clics**. Une
+vraie baisse de performance déplace les deux. Le rapport conversions / clic
+sépare donc les deux cas, et c'est ce que fait la carte principale : elle compare
+les 7 derniers jours aux 28 précédents et rend un verdict.
+
+| Verdict | Signature |
+|---|---|
+| **Cassure de mesure** | plus aucune conversion, les clics continuent |
+| **Mesure suspecte** | le taux chute de 30 % ou plus, le trafic tient à ±20 % |
+| **Performance** | taux et trafic baissent ensemble |
+| **Volume** | le trafic baisse, le taux tient |
+| **Trop peu de trafic** | moins de 200 clics sur la référence |
+
+Les seuils sont des constantes nommées en tête du bloc Tracking de
+`assets/app.js` (`TRK_RECENT_DAYS`, `TRK_BASE_DAYS`, `TRK_DROP`, `TRK_STABLE`,
+`TRK_MIN_CLICKS`) et sont **affichés dans le sous-titre de la carte**. Un seuil
+caché transforme un diagnostic en oracle, et personne ne peut discuter un oracle.
+
+### Actions muettes
+
+Le diagnostic par compte reste muet quand une seule balise casse parmi dix. Cette
+carte descend donc au grain de l'action de conversion : une action qui a converti
+au moins 20 fois sur la période, puis plus rien pendant 3 jours ou plus **alors
+que le compte recevait encore des clics**.
+
+Sur les données réelles elle sort `sales` sur `fr_sexy_1` : dernière conversion le
+26 mai, **76 jours de silence, 23 365 clics et 35 062 € dépensés depuis**. Et
+quatre actions de `es_top5decitas` qui se taisent le même jour — quand toutes les
+actions d'un compte s'arrêtent ensemble, c'est le conteneur, pas l'action.
+
+### Marché : la livraison, pas le ciblage
+
+Premier essai écarté : le ciblage géographique des campagnes
+(`campaign_criterion`). Il produit des clés inexploitables — une campagne visant
+seize pays donne un marché « 16 pays », et deux campagnes visant seize pays
+*différents* tombent dans le même seau. Le ciblage dit une intention.
+
+`geographic_view` donne le pays réel de livraison, par jour. Piège évité :
+`location_type` vaut `LOCATION_OF_PRESENCE` **ou** `AREA_OF_INTEREST`, et les
+additionner compterait deux fois la même dépense — d'où un filtre, pas une somme.
+
+Le portefeuille livre dans 22 pays. Ceux sous 200 clics sont repliés en une ligne
+« Autres marchés », nommés dans le sous-titre.
+
+### Journal des changements
+
+Deux sources, distinguées :
+
+- **Le Sheet** — vos déploiements GTM, changements Didomi, mises à jour de
+  conteneur. Superposés en repères verticaux sur la courbe conversions / clics,
+  numérotés, avec la liste sous le graphique et le détail dans l'infobulle.
+- **Google Ads** — `change_event`, ce qui a bougé dans les comptes. Plafonné à
+  **28 jours** par l'API (`DURING LAST_30_DAYS` est refusé, `>= J-29` sans borne
+  haute aussi ; seul un `BETWEEN` borné passe). L'onglet l'annonce : une période
+  sans repère plus ancienne ne veut pas dire qu'il ne s'est rien passé.
+
+`change_event.user_email` nomme l'auteur de chaque modification. Le champ est lu
+pour compter les auteurs distincts, **jamais écrit** dans `tracking.json` : un
+journal nominatif publié sur un dépôt public est un problème de RGPD, pas une
+fonctionnalité.
+
+### Le Sheet des changements techniques
+
+```bash
+python scripts/fetch_changelog.py --sheet <ID_ou_URL>   # depuis Google Sheets
+python scripts/fetch_changelog.py --csv fichier.csv     # hors ligne
+python scripts/fetch_changelog.py --sample              # jeu d'exemple
+```
+
+Le Sheet doit être **lisible sans authentification** (Fichier → Partager →
+Publier sur le web, format CSV ; ou partage en lecture pour tous), parce que le
+script tourne aussi dans GitHub Actions où il n'y a pas de session Google.
+
+Colonnes reconnues sans tenir compte de la casse, des accents ni de l'ordre :
+
+| Colonne | Obligatoire | Contenu |
+|---|---|---|
+| `date` | oui | `AAAA-MM-JJ` ou `JJ/MM/AAAA` |
+| `titre` | oui | « Déploiement conteneur sGTM v14 » |
+| `fin` | non | pour un événement qui dure |
+| `type` | non | `GTM`, `DIDOMI`, `CONTAINER`, `ADS`, `SITE` |
+| `detail` | non | texte libre |
+| `comptes` | non | noms de comptes, séparés par des virgules |
+| `marches` | non | `FR`, `ES`, `BE`… |
+| `impact` | non | `attendu`, `inattendu`, `neutre` |
+| `consent_rate` | non | taux de consentement — `0,82`, `82 %` ou `82` |
+
+Une ligne sans date ou sans titre est ignorée **et signalée** à l'extraction :
+mieux vaut un avertissement qu'un repère muet sur une courbe.
+
+⚠️ Tout ce que contient le Sheet finit dans `data/changelog.json`, donc en ligne
+sur un dépôt public. N'y mettez pas d'URL de conteneur privée, de jeton GTM ni
+d'adresse e-mail : un libellé suffit.
+
+Pour le rafraîchissement automatique, ajoutez le secret `CHANGELOG_SHEET_ID` (et
+`CHANGELOG_SHEET_GID` si l'onglet n'est pas le premier). Sans lui, l'étape
+s'abstient et l'onglet fonctionne — sans repères.
+
+### Deux pièges de lecture, signalés dans l'interface
+
+- **Périodes partielles.** Une fenêtre de 90 jours commence et finit rarement un
+  lundi. Sur une base 100, une première semaine tronquée sert de référence à tout
+  le reste, et une dernière semaine d'un seul jour ressemble à un effondrement.
+  Les deux sont écartées du graphique et gardées dans le tableau, marquées
+  « partiel ».
+- **Le mois en cours du profil de retard.** Une conversion à quinze jours de
+  retard survenue cette semaine n'est pas encore arrivée : la part « moins d'un
+  jour » du mois courant est mécaniquement surévaluée. Ce n'est pas un tagging qui
+  s'améliore, c'est une fenêtre qui se ferme trop tôt.
+
+Enfin, `conversions` et `all_conversions` ne disent pas la même chose : segmenté
+par action, le premier ne compte que les actions incluses dans la colonne
+« Conversions » — celles que les enchères voient. Sur ce MCC, **11 % seulement**
+des conversions suivies alimentent l'optimisation. La santé d'une balise se lit
+sur `all_conversions`, ce que l'algorithme optimise sur `conversions` ; les deux
+sont collectés, et un KPI le montre.
+
+---
+
 ## Section « Répartition du coût par sexe »
 
 Une carte du rapport, sous les classements, alimentée par `data/gender.json`
@@ -443,7 +589,8 @@ https://VOTRE-COMPTE.github.io/VOTRE-REPO/
 ```bash
 python scripts/fetch_ads_data.py     # rapport      → data/data.json
 python scripts/fetch_gender.py       # par sexe     → data/gender.json
-git add data/data.json data/gender.json
+python scripts/fetch_tracking.py     # tracking     → data/tracking.json
+git add data/data.json data/gender.json data/tracking.json
 git commit -m "Mise à jour des données"
 git push
 ```
@@ -452,10 +599,13 @@ Le site se redéploie automatiquement.
 
 ### 3.4 Rafraîchissement automatique (optionnel)
 
-`.github/workflows/refresh-data.yml` récupère `data.json`, `aimax.json` et
-`gender.json` chaque jour et les commite. Les deux derniers sont en
-`continue-on-error` : leur onglet se signale absent plutôt que de priver le
-rapport principal de sa mise à jour. Pour l'activer, ajoutez vos credentials dans **Settings → Secrets and
+`.github/workflows/refresh-data.yml` récupère `data.json`, `aimax.json`,
+`gender.json`, `tracking.json` et `changelog.json` chaque jour et les commite.
+Tous sauf le premier sont en `continue-on-error` : leur section se signale
+absente plutôt que de priver le rapport principal de sa mise à jour.
+
+Deux secrets facultatifs s'ajoutent pour la timeline des changements :
+`CHANGELOG_SHEET_ID` et `CHANGELOG_SHEET_GID`. Pour l'activer, ajoutez vos credentials dans **Settings → Secrets and
 variables → Actions** :
 
 `GOOGLE_ADS_DEVELOPER_TOKEN`, `GOOGLE_ADS_CLIENT_ID`,
@@ -479,10 +629,10 @@ recalculent sur la même sélection.
 Dans le menu *Comptes*, un premier clic **isole** le compte cliqué ; les clics
 suivants ajoutent ou retirent. Tout désélectionner revient à « tous ».
 
-Deux onglets en haut à droite — **Rapport** et **Live** — partagent cette rangée.
-Le filtre de comptes s'applique aux deux ; période, appareil, réseau et nom de
-campagne ne concernent que le rapport, le Live portant sur la seule journée en
-cours.
+Trois onglets en haut à droite — **Rapport**, **Live** et **Tracking** —
+partagent cette rangée. Le filtre de comptes s'applique aux trois ; la période
+cadre le rapport et le Tracking, mais pas le Live qui porte sur la seule journée
+en cours ; appareil, réseau et nom de campagne ne concernent que le rapport.
 
 **Liens partageables** — l'état des filtres est écrit dans l'URL. Copiez la barre
 d'adresse et le destinataire ouvre exactement la même vue :

@@ -91,16 +91,68 @@ jobs:
           GOOGLE_ADS_LOGIN_CUSTOMER_ID: ${{ secrets.GOOGLE_ADS_LOGIN_CUSTOMER_ID }}
         run: python scripts/fetch_gender.py --days "${{ github.event.inputs.days || '180' }}"
 
+      # Signaux de santé du tracking. Le journal des changements Google Ads
+      # qu'il embarque est plafonné à 28 jours par l'API : un rafraîchissement
+      # quotidien est donc la seule façon d'en garder une trace continue.
+      - name: Récupérer les signaux de tracking
+        if: steps.check.outputs.ready == 'true'
+        continue-on-error: true
+        env:
+          GOOGLE_ADS_DEVELOPER_TOKEN:   ${{ secrets.GOOGLE_ADS_DEVELOPER_TOKEN }}
+          GOOGLE_ADS_CLIENT_ID:         ${{ secrets.GOOGLE_ADS_CLIENT_ID }}
+          GOOGLE_ADS_CLIENT_SECRET:     ${{ secrets.GOOGLE_ADS_CLIENT_SECRET }}
+          GOOGLE_ADS_REFRESH_TOKEN:     ${{ secrets.GOOGLE_ADS_REFRESH_TOKEN }}
+          GOOGLE_ADS_LOGIN_CUSTOMER_ID: ${{ secrets.GOOGLE_ADS_LOGIN_CUSTOMER_ID }}
+        run: python scripts/fetch_tracking.py --days "${{ github.event.inputs.days || '180' }}"
+
+      # Timeline des changements techniques, depuis un Google Sheet publié.
+      # Sans le secret CHANGELOG_SHEET_ID, l'étape ne fait rien : l'onglet
+      # Tracking fonctionne sans, il n'affiche simplement aucun repère.
+      # Le garde est dans le shell et non dans « if: » : le contexte env d'une
+      # étape n'est pas lisible depuis sa propre condition.
+      - name: Récupérer la timeline des changements
+        if: steps.check.outputs.ready == 'true'
+        continue-on-error: true
+        env:
+          SHEET: ${{ secrets.CHANGELOG_SHEET_ID }}
+          GID: ${{ secrets.CHANGELOG_SHEET_GID }}
+        run: |
+          if [ -z "$SHEET" ]; then
+            echo "::notice::Secret CHANGELOG_SHEET_ID absent — timeline ignorée. L'onglet Tracking fonctionne sans."
+            exit 0
+          fi
+          if [ -n "$GID" ]; then
+            python scripts/fetch_changelog.py --sheet "$SHEET" --gid "$GID"
+          else
+            python scripts/fetch_changelog.py --sheet "$SHEET"
+          fi
+
       - name: Commiter si les données ont changé
         if: steps.check.outputs.ready == 'true'
         run: |
-          FILES="data/data.json data/aimax.json data/gender.json"
-          if git diff --quiet -- $FILES; then
-            echo "Aucun changement."
+          # Seuls les fichiers réellement présents : « git add » sur un chemin
+          # absent échoue, et un jeu de données optionnel a le droit de manquer.
+          FILES=""
+          for f in data/data.json data/aimax.json data/gender.json \
+                   data/tracking.json data/changelog.json; do
+            [ -f "$f" ] && FILES="$FILES $f"
+          done
+          if [ -z "$FILES" ]; then
+            echo "Aucun fichier de données à commiter."
             exit 0
           fi
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add $FILES
+          # « -f » est délibéré : changelog.json et aimax.json sont gitignorés
+          # pour qu'aucun « git add . » depuis un poste ne publie un jeu
+          # d'exemple ou des requêtes de recherche par accident. Ici le contenu
+          # ne peut venir que du Sheet et de l'API, d'où l'exception assumée.
+          git add -f $FILES
+          # --cached : le contrôle porte sur l'index, sinon un fichier
+          # nouvellement créé passerait pour « aucun changement ».
+          if git diff --cached --quiet; then
+            echo "Aucun changement."
+            exit 0
+          fi
           git commit -m "Mise à jour automatique des données Google Ads"
           git push

@@ -38,7 +38,9 @@
 <div class="filterbar" id="filterbar" role="search" aria-label="Filtres du rapport">
   <div class="filterbar__inner">
 
-    <div class="filter" data-report-only>
+    <!-- La période vaut sur le rapport ET sur le Tracking ; seul le Live n'en a
+         pas l'usage, puisqu'il porte sur la journée en cours. -->
+    <div class="filter" data-no-live>
       <span class="filter__label" id="lbl-range">Période</span>
       <div class="segmented" role="group" aria-labelledby="lbl-range" id="range-presets"></div>
       <details class="dropdown dropdown--tight" id="range-custom-wrap">
@@ -202,6 +204,133 @@
       <div class="card__body" id="live-camp-body"></div>
     </article>
   </div>
+</main>
+
+
+<!-- ── Onglet Tracking / Consent Mode ─────────────────────────────────────── -->
+<main id="view-tracking" hidden>
+  <div class="banner banner--error" id="trk-error" hidden></div>
+  <div class="banner banner--warn" id="trk-limits"></div>
+
+  <section class="section" aria-labelledby="h-trk-kpi">
+    <div class="section__head">
+      <h2 id="h-trk-kpi">Santé de la mesure</h2>
+      <p class="section__sub" id="trk-meta"></p>
+    </div>
+    <div class="kpi-grid" id="trk-kpi"></div>
+  </section>
+
+  <!-- La carte maîtresse : elle répond à « perf ou mesure ? ». -->
+  <section class="section" aria-labelledby="h-trk-diag">
+    <article class="card card--wide">
+      <div class="card__head">
+        <div>
+          <h2 class="card__title" id="h-trk-diag">Baisse de performance ou cassure de mesure ?</h2>
+          <p class="card__sub" id="trk-diag-sub"></p>
+        </div>
+        <div class="card__tools">
+          <div class="segmented segmented--sm" role="group" aria-label="Dimension"
+               id="trk-diag-dim"></div>
+          <div class="segmented segmented--sm viewtoggle" role="group"
+               aria-label="Type d'affichage" data-view-for="trkdiag"></div>
+        </div>
+      </div>
+      <div class="banner banner--warn banner--inline" id="trk-diag-note" hidden></div>
+      <div class="card__body" id="trk-diag-body"></div>
+    </article>
+  </section>
+
+  <section class="section" aria-labelledby="h-trk-silent">
+    <article class="card card--wide">
+      <div class="card__head">
+        <div>
+          <h2 class="card__title" id="h-trk-silent">Actions de conversion muettes</h2>
+          <p class="card__sub" id="trk-silent-sub"></p>
+        </div>
+      </div>
+      <div class="card__body" id="trk-silent-body"></div>
+    </article>
+  </section>
+
+  <section class="section" aria-labelledby="h-trk-time">
+    <article class="card card--wide">
+      <div class="card__head">
+        <div>
+          <h2 class="card__title" id="h-trk-time">Conversions face aux clics</h2>
+          <p class="card__sub" id="trk-time-sub"></p>
+        </div>
+        <div class="card__tools">
+          <div class="segmented segmented--sm" role="group" aria-label="Granularité"
+               id="trk-time-grain"></div>
+          <div class="segmented segmented--sm" role="group" aria-label="Échelle"
+               id="trk-time-scale"></div>
+          <div class="segmented segmented--sm viewtoggle" role="group"
+               aria-label="Type d'affichage" data-view-for="trktime"></div>
+        </div>
+      </div>
+      <div class="card__body" id="trk-time-body"></div>
+      <p class="card__foot" id="trk-time-legend"></p>
+    </article>
+  </section>
+
+  <div class="grid-2">
+    <!-- Masquée tant qu'aucun taux de consentement n'est fourni : Google Ads ne
+         l'expose pas, il vient du Sheet. -->
+    <article class="card" id="trk-consent-card" hidden>
+      <div class="card__head">
+        <div>
+          <h2 class="card__title" id="h-trk-consent">Taux de consentement</h2>
+          <p class="card__sub" id="trk-consent-sub"></p>
+        </div>
+        <div class="card__tools">
+          <div class="segmented segmented--sm viewtoggle" role="group"
+               aria-label="Type d'affichage" data-view-for="trkconsent"></div>
+        </div>
+      </div>
+      <div class="card__body" id="trk-consent-body"></div>
+    </article>
+
+    <article class="card">
+      <div class="card__head">
+        <div>
+          <h2 class="card__title" id="h-trk-lag">Retard de conversion</h2>
+          <p class="card__sub" id="trk-lag-sub"></p>
+        </div>
+        <div class="card__tools">
+          <div class="segmented segmented--sm" role="group" aria-label="Échelle"
+               id="trk-lag-scale"></div>
+          <div class="segmented segmented--sm viewtoggle" role="group"
+               aria-label="Type d'affichage" data-view-for="trklag"></div>
+        </div>
+      </div>
+      <div class="card__body" id="trk-lag-body"></div>
+    </article>
+  </div>
+
+  <section class="section" aria-labelledby="h-trk-log">
+    <article class="card card--wide">
+      <div class="card__head">
+        <div>
+          <h2 class="card__title" id="h-trk-log">Journal des changements</h2>
+          <p class="card__sub" id="trk-log-sub"></p>
+        </div>
+      </div>
+      <div class="banner banner--warn banner--inline" id="trk-log-note" hidden></div>
+      <div class="card__body" id="trk-log-body"></div>
+    </article>
+  </section>
+
+  <section class="section" aria-labelledby="h-trk-config">
+    <article class="card card--wide">
+      <div class="card__head">
+        <div>
+          <h2 class="card__title" id="h-trk-config">Configuration du suivi</h2>
+          <p class="card__sub" id="trk-config-sub"></p>
+        </div>
+      </div>
+      <div class="card__body" id="trk-config-body"></div>
+    </article>
+  </section>
 </main>
 
 
