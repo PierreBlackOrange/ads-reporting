@@ -169,6 +169,33 @@ le publier délibérément : `git add -f data/aimax.json`.
 
 ---
 
+## Le bouton « Actualiser » du Live — ce qu'il fait, ce qu'il ne peut pas faire
+
+Il **relit `data/live.json`** sans recharger la page, et la vue se redessine. Un
+rafraîchissement automatique tourne aussi toutes les 5 minutes, **uniquement**
+quand l'onglet Live est affiché et la fenêtre au premier plan.
+
+Il ne **régénère pas** les données. GitHub Pages sert un fichier statique : rien
+ne s'exécute côté serveur. Régénérer suppose d'appeler l'API Google Ads, donc de
+détenir un jeton — et un jeton posé dans une page publique est un jeton
+compromis, définitivement. Il n'existe pas de version prudente de cette idée.
+
+La régénération appartient au workflow `refresh-live.yml`, qui détient les
+secrets. Trois façons de la déclencher :
+
+| Moyen | Délai |
+|---|---|
+| Cron du workflow, toutes les 15 min de 6 h à 23 h (Paris) | 15 à 30 min, redéploiement Pages compris |
+| **Actions → Rafraîchir les données du jour → Run workflow** | ~2 min |
+| `python scripts/fetch_live.py` en local, puis commit + push | ~1 min |
+
+**Prérequis, et il n'est pas rempli aujourd'hui :** sans les cinq secrets Google
+Ads dans les paramètres du dépôt, le workflow s'abstient proprement et
+`live.json` ne bouge jamais. Le bouton affiche alors « Données figées depuis N
+jours · la régénération automatique ne tourne pas », parce qu'un bouton qui ne
+change rien à l'écran passe pour cassé alors que le problème est ailleurs. Voir
+la section 3.4 pour poser les secrets.
+
 ## Page Cannibalisation sémantique
 
 `cannibalisation.html` est un export **figé**, produit par un autre projet

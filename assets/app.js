@@ -5121,7 +5121,7 @@ function renderLive() {
   if (stale) stamp.className = 'live-stale';
   stamp.textContent = `${String(gen.getHours()).padStart(2, '0')}:`
     + `${String(gen.getMinutes()).padStart(2, '0')}`
-    + (ageMin >= 1 ? ` (il y a ${ageMin} min)` : ' (à l\'instant)');
+    + ` (${humanAge(ageMin)})`;
   els.liveMeta.appendChild(stamp);
 
   // La ligne sous les filtres décrit ce que les filtres cadrent réellement :
@@ -5199,7 +5199,151 @@ async function loadLive() {
     [{ key: 'cumul', label: 'Cumulé' }, { key: 'hour', label: 'Par heure' }],
     () => S.liveCumul, (k) => { S.liveCumul = k; renderLive(); });
   buildViewToggles();
+
+  els.liveRefresh.addEventListener('click', () => refreshLive(false));
+  // Reprendre la relecture au retour sur l'onglet, et l'arrêter en le quittant :
+  // une minuterie qui tourne sur une fenêtre en arrière-plan ne sert personne.
+  document.addEventListener('visibilitychange', updateLiveAutoRefresh);
+
   renderLive();
+  noteLiveFreshness();
+  updateLiveAutoRefresh();
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   Actualisation du direct
+
+   Ce que ce bouton fait, et ce qu'il ne peut pas faire.
+
+   Il relit `data/live.json` sans recharger la page. Il ne REGÉNÈRE pas les
+   données : sur GitHub Pages, la page est un fichier statique servi par un
+   hébergeur qui n'exécute rien. Régénérer suppose d'appeler l'API Google Ads,
+   donc de détenir un jeton — et un jeton posé dans une page publique est un
+   jeton compromis, définitivement. Il n'y a pas de version prudente de cette
+   idée.
+
+   La régénération appartient donc au workflow GitHub Actions, qui détient les
+   secrets. Ce bouton sert à récupérer son dernier résultat sans F5, et à dire
+   franchement quand ce résultat n'a pas bougé.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+const LIVE_AUTO_MS = 5 * 60 * 1000;
+let liveAutoTimer = null;
+
+/**
+ * Âge en clair, dans l'unité qui convient.
+ *
+ * « il y a 2 724 min » demande un calcul mental pour comprendre qu'on regarde
+ * l'avant-veille. L'unité doit changer avec l'ordre de grandeur, faute de quoi
+ * un tableau périmé passe pour un tableau frais.
+ */
+function humanAge(min) {
+  if (min < 1) return 'à l\'instant';
+  if (min < 60) return `il y a ${min} min`;
+  const h = Math.floor(min / 60);
+  if (h < 24) return `il y a ${h} h`;
+  const d = Math.floor(h / 24);
+  return `il y a ${d} jour${d > 1 ? 's' : ''}`;
+}
+
+async function refreshLive(auto) {
+  if (S.liveState === 'loading') return;
+  const before = S.live && S.live.meta ? String(S.live.meta.generated_at) : '';
+
+  els.liveRefresh.disabled = true;
+  els.liveRefresh.classList.add('is-busy');
+  els.liveRefreshLabel.textContent = 'Lecture…';
+
+  let fresh = null;
+  try {
+    // Paramètre d'anti-cache en plus de `no-store` : GitHub Pages sert derrière
+    // un CDN qui ignore parfois l'en-tête, et rien n'est plus trompeur qu'un
+    // bouton d'actualisation qui renvoie la version précédente.
+    const res = await fetch(`data/live.json?t=${Date.now()}`, { cache: 'no-store' });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    fresh = await res.json();
+  } catch (err) {
+    els.liveRefresh.disabled = false;
+    els.liveRefresh.classList.remove('is-busy');
+    els.liveRefreshLabel.textContent = 'Actualiser';
+    els.liveRefreshNote.textContent = `Lecture impossible (${err.message}).`;
+    els.liveRefreshNote.className = 'live-refresh__note live-refresh__note--bad';
+    return;
+  }
+
+  S.live = fresh;
+  const after = fresh.meta ? String(fresh.meta.generated_at) : '';
+  renderLive();
+
+  els.liveRefresh.disabled = false;
+  els.liveRefresh.classList.remove('is-busy');
+  els.liveRefreshLabel.textContent = 'Actualiser';
+  noteLiveFreshness(after !== before ? 'neuf' : (auto ? 'auto' : 'identique'));
+}
+
+/**
+ * Message de fraîcheur sous le bouton.
+ *
+ * Un bouton qu'on presse et qui ne change rien à l'écran passe pour cassé. Il
+ * faut donc distinguer trois issues : les données ont changé, elles n'ont pas
+ * changé, ou le fichier est vieux de plusieurs heures — ce dernier cas voulant
+ * dire que la régénération automatique ne tourne pas, ce qu'aucun rechargement
+ * ne corrigera.
+ */
+function noteLiveFreshness(outcome) {
+  if (!S.live || !S.live.meta) return;
+  const gen = new Date(S.live.meta.generated_at);
+  const min = Math.round((Date.now() - gen.getTime()) / 60000);
+
+  let text;
+  let cls = 'live-refresh__note';
+
+  if (outcome === 'neuf') {
+    text = 'Données mises à jour.';
+    cls += ' live-refresh__note--good';
+  } else if (outcome === 'identique') {
+    text = 'Aucun changement : le fichier est le même.';
+  } else if (min >= 24 * 60) {
+    const days = Math.floor(min / (24 * 60));
+    text = `Données figées depuis ${days} jour${days > 1 ? 's' : ''}.`;
+    cls += ' live-refresh__note--bad';
+  } else if (min >= 60) {
+    text = `Dernière extraction il y a ${Math.floor(min / 60)} h.`;
+    cls += ' live-refresh__note--bad';
+  } else {
+    text = `Extraites il y a ${Math.max(0, min)} min.`;
+  }
+
+  // Quand le fichier est vieux, relire ne sert à rien : c'est la régénération
+  // qui manque. Le dire, plutôt que laisser presser un bouton sans effet.
+  if (min >= 60) {
+    text += ' La régénération automatique ne tourne pas — voir le README, section 3.4.';
+  }
+
+  els.liveRefreshNote.textContent = text;
+  els.liveRefreshNote.className = cls;
+}
+
+/**
+ * Relecture périodique, seulement quand l'onglet Live est à l'écran.
+ *
+ * Sur un onglet masqué ou une fenêtre en arrière-plan, la requête ne servirait
+ * personne. La minuterie est donc liée à la vue courante et à la visibilité du
+ * document.
+ */
+function updateLiveAutoRefresh() {
+  const wanted = S.view === 'live'
+    && S.liveState === 'ready'
+    && document.visibilityState === 'visible';
+
+  if (wanted && !liveAutoTimer) {
+    liveAutoTimer = setInterval(() => {
+      if (document.visibilityState === 'visible' && S.view === 'live') refreshLive(true);
+    }, LIVE_AUTO_MS);
+  } else if (!wanted && liveAutoTimer) {
+    clearInterval(liveAutoTimer);
+    liveAutoTimer = null;
+  }
 }
 
 /* ── Navigation entre vues ────────────────────────────────────────────────── */
@@ -5229,6 +5373,8 @@ function setView(view) {
   if (view === 'report') render();
   else if (S.liveState === 'ready') renderLive();
   else els.filterStatus.textContent = 'Direct en cours de chargement…';
+
+  updateLiveAutoRefresh();
 }
 
 /* ── Bandeaux & en-tête ───────────────────────────────────────────────────── */
@@ -5337,6 +5483,8 @@ function cacheEls() {
     filterbar: 'filterbar',
     liveError: 'live-error', liveTz: 'live-tz', liveAlertSlot: 'live-alert-slot',
     liveMeta: 'live-meta', liveKpi: 'live-kpi',
+    liveRefresh: 'live-refresh', liveRefreshLabel: 'live-refresh-label',
+    liveRefreshNote: 'live-refresh-note',
     liveHourlyBody: 'live-hourly-body', liveHourlySub: 'live-hourly-sub',
     liveMetric: 'live-metric', liveCumul: 'live-cumul',
     liveActionsBody: 'live-actions-body', liveActionsSub: 'live-actions-sub',

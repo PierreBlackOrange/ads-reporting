@@ -124,9 +124,19 @@
   <div id="live-alert-slot"></div>
 
   <section class="section" aria-labelledby="h-live-kpi">
-    <div class="section__head">
-      <h2 id="h-live-kpi">Aujourd'hui, à heure égale</h2>
-      <p class="section__sub" id="live-meta"></p>
+    <div class="section__head section__head--split">
+      <div>
+        <h2 id="h-live-kpi">Aujourd'hui, à heure égale</h2>
+        <p class="section__sub" id="live-meta"></p>
+      </div>
+      <div class="live-refresh">
+        <button type="button" class="btn btn--ghost" id="live-refresh"
+                title="Relire data/live.json sans recharger la page">
+          <span class="live-refresh__glyph" aria-hidden="true"></span>
+          <span id="live-refresh-label">Actualiser</span>
+        </button>
+        <p class="live-refresh__note" id="live-refresh-note"></p>
+      </div>
     </div>
     <div class="kpi-grid" id="live-kpi"></div>
   </section>
