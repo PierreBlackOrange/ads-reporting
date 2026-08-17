@@ -304,22 +304,40 @@ vous visez un document court.
 `data/changelog.json` (`python scripts/fetch_changelog.py`). Chargé à l'ouverture
 de l'onglet.
 
-### Périmètre : neuf comptes
+### Périmètre : deux filtres qui se cumulent
 
-L'onglet ne regarde que les comptes réellement suivis — un diagnostic sur un
-compte que personne ne surveille produit des alertes que personne ne traitera, et
-noie celles qui comptent :
+L'onglet ne regarde que les comptes qui satisfont **les deux** conditions :
 
-`gdm_spiice-google-fr` · `gdm_jacquie_michel_contact_fr` ·
-`2lm_jacquie_et_michel_rencontre` · `gdm_femme-liberee_homme` · `Easyflirt` ·
-`JM_SWIPE` · `Onlydate_93781` · `fr_sexy_1` · `fr_love_toprencontreserieuse`
+1. **être dans la liste surveillée** — `TRACKING_SCOPE` dans `assets/app.js`. Un
+   diagnostic sur un compte que personne ne surveille produit des alertes que
+   personne ne traitera, et noie celles qui comptent ;
+2. **être rattaché au MCC Easyflirt ou au MCC Comparateur** — `TRACKING_MCC`,
+   indexé par **identifiant** de MCC.
 
-La liste est la constante `TRACKING_SCOPE` dans `assets/app.js`. Deux comptes
-« Spiice » existent : `gdm_spiice-google-fr` (Recherche) est dans le périmètre,
-`gdm_Spiice_App` et `Spiice_Display` non. Sélectionner un compte hors périmètre
-dans la barre du haut affiche un message explicite, pas un onglet vide.
+Il en reste huit : `gdm_spiice-google-fr` · `gdm_jacquie_michel_contact_fr` ·
+`2lm_jacquie_et_michel_rencontre` · `gdm_femme-liberee_homme` · `JM_SWIPE` ·
+`Onlydate_93781` · `fr_sexy_1` · `fr_love_toprencontreserieuse`.
 
-Sur ce périmètre, la part des conversions vues par les enchères tombe à **4,2 %**
+**Le nom d'un compte ne dit rien de son rattachement.** Le compte nommé
+`Easyflirt` n'est pas dans le MCC Easyflirt — il est dans `MCC_Agence` — et c'est
+la raison pour laquelle il est écarté. Le filtre s'appuie donc sur la hiérarchie
+réelle, résolue par `fetch_tracking.py` (`map_accounts_to_mcc`), qui interroge
+chaque sous-MCC de niveau 1 pour **tous** ses descendants non-manager : les
+sous-MCC imbriqués sont couverts, et le rattachement est stocké dans
+`tracking.json` (`mcc`, `mccId`).
+
+Le bandeau de l'onglet annonce les deux écarts possibles : les comptes de la liste
+écartés par le filtre de MCC (avec le MCC où ils se trouvent réellement), et les
+comptes des deux MCC qui ne sont pas dans la liste surveillée — aujourd'hui
+`be_sexy_top-site-de-rencontre`, `es_top5decitas`, `gdm_Spiice_App` et
+`phoenix_franco`. Retirer sans le dire un compte que quelqu'un a explicitement
+demandé se lirait comme une perte de données.
+
+Deux comptes « Spiice » existent par ailleurs : `gdm_spiice-google-fr` (Recherche)
+est suivi, `gdm_Spiice_App` et `Spiice_Display` non. Sélectionner un compte hors
+périmètre dans la barre du haut affiche un message explicite, pas un onglet vide.
+
+Sur ce périmètre, la part des conversions vues par les enchères tombe à **4,3 %**
 (contre 10,6 % sur les 21 comptes actifs) : l'essentiel de ce qui est mesuré ici
 n'optimise rien.
 

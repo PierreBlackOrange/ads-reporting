@@ -5862,12 +5862,49 @@ const TRACKING_SCOPE = [
   'fr_love_toprencontreserieuse',
 ];
 
-/** Indices, dans tracking.json, des comptes du périmètre. */
+/**
+ * Sous-MCC retenus. Le filtre porte sur les identifiants et non sur les noms :
+ * un MCC peut être renommé, et surtout le nom d'un COMPTE ne dit rien de son
+ * rattachement — le compte « Easyflirt » n'est pas dans le MCC Easyflirt.
+ */
+const TRACKING_MCC = {
+  '7000081002': 'MCC Easyflirt',
+  '9041585896': 'MCC Comparateur',
+};
+
+/** Comptes du périmètre : nommés dans TRACKING_SCOPE ET rattachés à un MCC retenu. */
 function trackingScope() {
   const t = S.tracking;
   if (!t) return new Set();
   const wanted = new Set(TRACKING_SCOPE);
-  return new Set(t.accounts.map((a, i) => (wanted.has(a.name) ? i : -1)).filter((i) => i >= 0));
+  return new Set(t.accounts
+    .map((a, i) => (wanted.has(a.name) && TRACKING_MCC[a.mccId] ? i : -1))
+    .filter((i) => i >= 0));
+}
+
+/**
+ * Comptes nommés dans le périmètre mais écartés par le filtre de MCC.
+ *
+ * Ils sont annoncés dans l'interface : retirer sans le dire un compte que
+ * quelqu'un a explicitement demandé se lit comme une perte de données.
+ */
+function trackingOutOfMcc() {
+  const t = S.tracking;
+  if (!t) return [];
+  const wanted = new Set(TRACKING_SCOPE);
+  return t.accounts
+    .filter((a) => wanted.has(a.name) && !TRACKING_MCC[a.mccId])
+    .map((a) => ({ name: a.name, mcc: a.mcc || 'aucun sous-MCC' }));
+}
+
+/** Comptes des MCC retenus qui ne sont pas dans la liste surveillée. */
+function trackingMccNotMonitored() {
+  const t = S.tracking;
+  if (!t) return [];
+  const wanted = new Set(TRACKING_SCOPE);
+  return t.accounts
+    .filter((a) => TRACKING_MCC[a.mccId] && !wanted.has(a.name))
+    .map((a) => a.name);
 }
 
 /**
@@ -7235,19 +7272,42 @@ function renderTracking() {
   const scoped = selectedTrackingAccounts();
   const nAcc = scoped.size;
   const missing = trackingMissing();
+  const outOfMcc = trackingOutOfMcc();
+  const notMonitored = trackingMccNotMonitored();
+  const mccNames = Object.values(TRACKING_MCC).join(' et ');
   els.trkMeta.textContent =
     `${fmtDateLong(S.start)} – ${fmtDateLong(S.end)} · `
-    + `${nAcc} compte(s) sur les ${TRACKING_SCOPE.length} du périmètre de suivi · `
+    + `${nAcc} compte(s) suivi(s) · périmètre limité à ${mccNames} · `
     + `données disponibles du ${fmtDateLong(meta.date_start)} au ${fmtDateLong(meta.date_end)}`
     + (missing.length ? ` · absent(s) du jeu de données : ${missing.join(', ')}` : '');
+
+  // Ce que le filtre de MCC retire, et ce qu'il pourrait ajouter : les deux
+  // méritent d'être dits, sinon l'écart entre la liste demandée et l'affichage
+  // passe pour un bug.
+  renderTrkLimits();   // vide et réécrit le bandeau : appelable à volonté
+  if (outOfMcc.length || notMonitored.length) {
+    const p = document.createElement('span');
+    const bits = [];
+    if (outOfMcc.length) {
+      bits.push(`Écarté(s) car hors ${mccNames} : `
+        + outOfMcc.map((a) => `${a.name} (${a.mcc})`).join(', ') + '.');
+    }
+    if (notMonitored.length) {
+      bits.push(`${notMonitored.length} compte(s) de ces MCC ne sont pas dans la liste `
+        + `surveillée : ${notMonitored.join(', ')}.`);
+    }
+    p.textContent = bits.join(' ');
+    els.trkLimits.appendChild(p);
+  }
 
   // Un compte hors périmètre sélectionné dans la barre du haut donne un onglet
   // vide : il faut dire pourquoi, sinon le filtre passe pour cassé.
   if (!nAcc) {
     const msg = S.accounts.size
-      ? 'Aucun compte sélectionné n\'appartient au périmètre de l\'onglet Tracking. '
-        + `Comptes suivis : ${TRACKING_SCOPE.join(', ')}.`
-      : 'Aucun compte du périmètre de suivi n\'est présent dans data/tracking.json.';
+      ? 'Aucun compte sélectionné n\'appartient au périmètre de l\'onglet Tracking '
+        + `(comptes suivis rattachés à ${mccNames}) : `
+        + `${[...trackingScope()].map((i) => t.accounts[i].name).join(', ') || 'aucun'}.`
+      : `Aucun compte suivi n'est rattaché à ${mccNames} dans data/tracking.json.`;
     els.trkKpi.replaceChildren();
     for (const el of [els.trkDiagBody, els.trkSilentBody, els.trkTagsBody,
       els.trkUploadBody, els.trkTimeBody, els.trkLagBody, els.trkLogBody,

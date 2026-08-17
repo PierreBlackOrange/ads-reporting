@@ -228,6 +228,59 @@ def parse_args() -> argparse.Namespace:
     return p.parse_args()
 
 
+def map_accounts_to_mcc(cfg: dict, token: str, root: str) -> dict[str, dict]:
+    """Compte client → sous-MCC de premier niveau auquel il est rattaché.
+
+    Le nom d'un compte ne dit rien de son rattachement : le compte « Easyflirt »
+    n'est pas dans le MCC Easyflirt. Un filtre par périmètre doit donc s'appuyer
+    sur la hiérarchie réelle, jamais sur une convention de nommage.
+
+    Les sous-MCC imbriqués sont couverts : on interroge chaque manager de niveau 1
+    pour TOUS ses descendants non-manager, pas seulement ses enfants directs.
+    """
+    managers = []
+    try:
+        rows = F.ads_search(cfg, token, root, """
+            SELECT customer_client.id, customer_client.descriptive_name,
+                   customer_client.level
+            FROM customer_client
+            WHERE customer_client.manager = TRUE
+              AND customer_client.status = 'ENABLED'
+              AND customer_client.level = 1
+        """)
+    except F.ApiError as exc:
+        print(f"  hiérarchie indisponible ({exc}) — rattachements non renseignés")
+        return {}
+    for r in rows:
+        c = r.get("customerClient") or {}
+        mid = F.digits_only(c.get("id", ""))
+        if mid:
+            managers.append({"id": mid, "name": c.get("descriptiveName") or F.fmt_cid(mid)})
+
+    out: dict[str, dict] = {}
+    for m in managers:
+        try:
+            kids = F.ads_search(cfg, token, m["id"], """
+                SELECT customer_client.id, customer_client.descriptive_name
+                FROM customer_client
+                WHERE customer_client.manager = FALSE
+                  AND customer_client.status = 'ENABLED'
+            """)
+        except F.ApiError:
+            continue
+        for k in kids:
+            c = k.get("customerClient") or {}
+            cid = F.digits_only(c.get("id", ""))
+            # Un compte rattaché à deux MCC garde le premier rencontré, et le cas
+            # est signalé : le silence laisserait croire à un rattachement unique.
+            if cid and cid not in out:
+                out[cid] = {"mccId": m["id"], "mcc": m["name"]}
+            elif cid and out[cid]["mccId"] != m["id"]:
+                out[cid].setdefault("also", []).append(m["name"])
+    print(f"  {len(managers)} sous-MCC · {len(out)} compte(s) rattaché(s)")
+    return out
+
+
 def resolve_countries(cfg: dict, token: str, cid: str, ids: set[str]) -> dict[str, str]:
     """geoTargetConstants/2250 → « FR ». geographic_view ne renvoie que des
     identifiants de pays, donc une poignée de valeurs à résoudre."""
@@ -562,6 +615,22 @@ def main() -> None:
             continue
         key = (dpos[d], ai, rtype, op, client)
         change_out[key] = change_out.get(key, 0) + 1
+
+    print("\nRattachement des comptes aux sous-MCC…")
+    mcc_of = map_accounts_to_mcc(cfg, token, F.digits_only(cfg["login_customer_id"]))
+    for entry in acc_idx.values:
+        # acc_idx ne porte que le CID formaté : on remonte au brut pour la jointure.
+        raw = F.digits_only(entry.get("cid", ""))
+        info = mcc_of.get(raw)
+        entry["mcc"] = info["mcc"] if info else ""
+        entry["mccId"] = info["mccId"] if info else ""
+        if info and info.get("also"):
+            entry["mccAlso"] = info["also"]
+
+    orphans = [e["name"] for e in acc_idx.values if not e["mcc"]]
+    if orphans:
+        print(f"  {len(orphans)} compte(s) sans sous-MCC de niveau 1 : "
+              + ", ".join(orphans[:6]) + (" …" if len(orphans) > 6 else ""))
 
     currency, _rates = F.resolve_currency(accounts, cfg)
 
