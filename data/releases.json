@@ -1,15 +1,24 @@
 {
  "meta": {
-  "generated_at": "2026-08-17T12:39:47+02:00",
+  "generated_at": "2026-08-17T14:41:05+02:00",
   "commits_scanned": "tous",
-  "entries": 30,
-  "data_only_skipped": 59,
+  "entries": 31,
+  "data_only_skipped": 61,
   "first": "2026-08-11",
   "last": "2026-08-17"
  },
  "entries": [
   {
-   "sha": "f803ea6",
+   "sha": "0eacd7d",
+   "date": "2026-08-17",
+   "title": "Tracking : perimetre limite aux MCC Easyflirt et Comparateur",
+   "kind": "feat",
+   "kindLabel": "Évolution",
+   "detail": "Le filtre porte sur la hierarchie reelle, pas sur les noms — et c'etait necessaire : le compte nomme « Easyflirt » n'est PAS dans le MCC Easyflirt, il est dans MCC_Agence.",
+   "files": 4
+  },
+  {
+   "sha": "9f1230b",
    "date": "2026-08-17",
    "title": "Historique des modifications Google Ads, au detail",
    "kind": "feat",
