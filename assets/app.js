@@ -196,6 +196,9 @@ const S = {
   topMetric: 'cost',
   mixDim: 'device',
   mixHidden: new Set(),
+  releases: null,
+  releasesState: 'idle', // idle | loading | ready | error
+
   tracking: null,
   trackingState: 'idle', // idle | loading | ready | error
   changelog: null,
@@ -7378,6 +7381,170 @@ async function loadChangelog() {
   if (S.trackingState === 'ready') renderTracking();
 }
 
+/* ════════════════════════════════════════════════════════════════════════════
+   Historique des modifications du reporting
+
+   Ce que l'OUTIL a changé — sections ajoutées, correctifs, changements de méthode
+   de calcul. Pas ce que les comptes Google Ads ont changé : ceux-là ont leur
+   propre journal dans l'onglet Tracking. Les mélanger laisserait croire qu'un
+   ajout de graphique et une modification d'enchère sont de même nature.
+
+   Le fichier est produit par scripts/build_releases.py depuis le journal Git,
+   plutôt que tenu à la main : des notes de version manuelles se périment au
+   premier oubli, et un historique faux est pire qu'absent.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+const RELEASE_SLOT = { feat: 1, fix: 8, doc: 6, probe: 7 };
+
+async function loadReleases() {
+  if (S.releasesState !== 'idle') return;
+  S.releasesState = 'loading';
+  try {
+    const res = await fetch('data/releases.json', { cache: 'no-cache' });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    S.releases = await res.json();
+  } catch (err) {
+    // Absence de fichier ≠ erreur : un dépôt cloné sans exécuter le générateur
+    // n'a pas d'historique. La section se masque plutôt que d'afficher un cadre
+    // vide.
+    S.releasesState = 'error';
+    console.info(`Historique des modifications absent (${err.message}). `
+      + `Générez data/releases.json avec « python scripts/build_releases.py ».`);
+    return;
+  }
+  if (!S.releases || !Array.isArray(S.releases.entries) || !S.releases.entries.length) {
+    S.releasesState = 'error';
+    return;
+  }
+  S.releasesState = 'ready';
+  renderReleases();
+}
+
+function renderReleases() {
+  if (S.releasesState !== 'ready') return;
+  const r = S.releases;
+  const list = r.entries;
+  els.releasesSection.hidden = false;
+
+  els.releasesSub.textContent =
+    `${list.length} modification(s) de l'outil, du ${fmtDateLong(r.meta.first)} au `
+    + `${fmtDateLong(r.meta.last)} · déduit du journal Git, hors rafraîchissements `
+    + `de données (${r.meta.data_only_skipped} écartés) · les changements des comptes `
+    + `Google Ads sont dans l'onglet Tracking`;
+
+  renderTable(els.releasesBody, {
+    scroll: true,
+    caption: 'Historique des modifications du reporting',
+    cols: [
+      { key: 'date', label: 'Date', text: true },
+      { key: 'kind', label: 'Nature', text: true },
+      { key: 'title', label: 'Modification', text: true },
+      { key: 'detail', label: 'Pourquoi', text: true },
+      { key: 'sha', label: 'Commit', text: true },
+    ],
+    rows: list.map((e) => ({
+      date: fmtDateShort(e.date),
+      _swatch: seriesColor(RELEASE_SLOT[e.kind] || 1),
+      kind: e.kindLabel,
+      title: e.title,
+      detail: e.detail || '—',
+      sha: e.sha,
+    })),
+  });
+}
+
+/* ── Export PDF ───────────────────────────────────────────────────────────── */
+
+/**
+ * Passe par la boîte d'impression du navigateur.
+ *
+ * C'est la seule voie possible ici : une bibliothèque de génération PDF
+ * (jsPDF, html2canvas) devrait être embarquée dans la page — la politique de
+ * sécurité du dépôt interdit tout script externe — et rendrait des graphiques
+ * rastérisés là où l'impression du navigateur conserve le SVG vectoriel, donc
+ * net à n'importe quelle échelle.
+ *
+ * Avant d'imprimer : l'historique est déplié (une section repliée n'apparaîtrait
+ * pas dans le PDF) et le périmètre courant est écrit en tête, puisque la barre de
+ * filtres, elle, ne s'imprime pas. Un PDF qui ne dit pas sur quoi il porte est
+ * inutilisable trois semaines plus tard.
+ */
+function exportPdf() {
+  const wasOpen = els.releases.open;
+  els.releases.open = true;
+
+  // Une section jamais chargée n'imprime qu'un titre et un cadre vide — le
+  // bouton qu'elle contient, lui, n'a rien à faire sur du papier. On la retire
+  // du document le temps de l'impression plutôt que de livrer un encadré muet.
+  const hidden = [];
+  if (S.termsState !== 'ready' && els.semSection) {
+    hidden.push(els.semSection);
+    els.semSection.hidden = true;
+  }
+
+  const bits = [`${fmtDateLong(S.start)} – ${fmtDateLong(S.end)}`];
+  if (S.accounts.size) {
+    bits.push([...S.accounts]
+      .map((i) => S.data.accounts[i] && S.data.accounts[i].name)
+      .filter(Boolean).join(', '));
+  } else {
+    bits.push(`${S.data.accounts.length} comptes`);
+  }
+  if (S.devices.size) {
+    bits.push([...S.devices].map((i) => DEVICE_LABELS[S.data.devices[i]]
+      || S.data.devices[i]).join(', '));
+  }
+  if (S.networks.size) {
+    bits.push([...S.networks].map((i) => NETWORK_LABELS[S.data.networks[i]]
+      || S.data.networks[i]).join(', '));
+  }
+  if (S.search.trim()) bits.push(`recherche « ${S.search.trim()} »`);
+  els.printScope.textContent = bits.join(' · ');
+
+  const gen = S.data.meta && S.data.meta.generated_at
+    ? new Date(S.data.meta.generated_at) : null;
+  els.printStamp.textContent = gen
+    ? `Données extraites le ${fmtDateLong(gen.toISOString().slice(0, 10))} · `
+      + `document imprimé le ${fmtDateLong(new Date().toISOString().slice(0, 10))}`
+    : '';
+
+  Tip.hide();
+
+  // Thème clair forcé pendant l'impression.
+  //
+  // En thème sombre, les navigateurs n'impriment pas les fonds par défaut : le
+  // texte clair se retrouve sur du papier blanc, illisible. Basculer le thème ne
+  // suffit pas — les couleurs de série sont écrites en dur dans le SVG au moment
+  // du tracé — d'où le redessin synchrone avant l'appel à print().
+  const theme = document.documentElement.dataset.theme;
+  const wasDark = theme === 'dark'
+    || (theme !== 'light' && window.matchMedia('(prefers-color-scheme: dark)').matches);
+  if (wasDark) {
+    document.documentElement.dataset.theme = 'light';
+    if (S.view === 'report') doRender();
+    else if (S.view === 'tracking' && S.trackingState === 'ready') renderTracking();
+    else if (S.liveState === 'ready') renderLive();
+    if (S.releasesState === 'ready') renderReleases();
+  }
+
+  // L'état de la page ne doit pas dépendre du fait qu'on ait imprimé.
+  const restore = () => {
+    els.releases.open = wasOpen;
+    for (const el of hidden) el.hidden = false;
+    if (wasDark) {
+      if (theme) document.documentElement.dataset.theme = theme;
+      else delete document.documentElement.dataset.theme;
+      if (S.view === 'report') doRender();
+      else if (S.view === 'tracking' && S.trackingState === 'ready') renderTracking();
+      else if (S.liveState === 'ready') renderLive();
+      if (S.releasesState === 'ready') renderReleases();
+    }
+    window.removeEventListener('afterprint', restore);
+  };
+  window.addEventListener('afterprint', restore);
+  window.print();
+}
+
 /* ── Navigation entre vues ────────────────────────────────────────────────── */
 
 function setView(view) {
@@ -7553,6 +7720,10 @@ function cacheEls() {
     liveCampBody: 'live-camp-body', liveCampSub: 'live-camp-sub',
     filterAction: 'filter-action', actionPanel: 'action-panel',
     actionSummary: 'action-summary',
+    releasesSection: 'releases-section', releases: 'releases',
+    releasesSub: 'releases-sub', releasesBody: 'releases-body',
+    semSection: 'sem-section',
+    exportPdf: 'export-pdf', printScope: 'print-scope', printStamp: 'print-stamp',
   };
   for (const k in ids) els[k] = document.getElementById(ids[k]);
 }
@@ -7663,6 +7834,7 @@ function wireControls() {
   });
 
   els.exportCsv.addEventListener('click', exportCsv);
+  els.exportPdf.addEventListener('click', exportPdf);
   els.semLoad.addEventListener('click', loadTerms);
 
   // Un clic hors d'un menu le referme.
@@ -7730,6 +7902,7 @@ async function init() {
   // arrive, et reste masquée s'il n'existe pas.
   loadAimax();
   loadGender();
+  loadReleases();
 
   if (S.autoLoadTerms) loadTerms();
 }

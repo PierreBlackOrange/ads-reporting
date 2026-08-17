@@ -169,6 +169,73 @@ le publier délibérément : `git add -f data/aimax.json`.
 
 ---
 
+## Historique des modifications du reporting
+
+Une section repliée en bas du rapport, alimentée par `data/releases.json`
+(`python scripts/build_releases.py`).
+
+Elle retrace ce que **l'outil** a changé — sections ajoutées, correctifs,
+changements de méthode de calcul. Pas ce que les comptes Google Ads ont changé :
+ceux-là ont leur propre journal dans l'onglet Tracking. Les mélanger laisserait
+croire qu'un ajout de graphique et une modification d'enchère sont de même nature.
+
+**Généré, pas écrit à la main.** Des notes de version tenues manuellement se
+périment au premier oubli, et un historique faux est pire qu'absent. Celui-ci se
+déduit du journal Git, seule source qui ne peut pas mentir sur ce qui a été livré.
+Les commits qui ne touchent que `data/` sont écartés — le filtre porte sur les
+fichiers réellement modifiés, pas sur l'intitulé du commit, parce qu'un intitulé
+peut mentir et une liste de fichiers non. Sur l'historique actuel : 28
+modifications retenues, 56 rafraîchissements de données écartés.
+
+À relancer après une livraison :
+
+```bash
+python scripts/build_releases.py
+git add data/releases.json && git commit -m "Historique à jour" && git push
+```
+
+Les intitulés sont repris **verbatim** du journal Git. Certains sont sans accents,
+séquelle de la façon dont ils ont été écrits ; les corriger dans le JSON
+reviendrait à réintroduire une saisie manuelle qui divergerait du dépôt.
+
+## Bouton PDF
+
+Le bouton **PDF ↓** de l'en-tête ouvre la boîte d'impression du navigateur, où
+l'on choisit « Enregistrer au format PDF ». Ce n'est pas un téléchargement
+direct, et le titre du bouton le dit.
+
+**Pourquoi pas une vraie génération PDF.** Une bibliothèque (jsPDF, html2canvas)
+devrait être embarquée dans la page — le dépôt n'autorise aucun script externe —
+et rendrait des graphiques **rastérisés**. L'impression du navigateur conserve le
+SVG vectoriel : net à n'importe quelle échelle, texte sélectionnable dans le PDF.
+
+Ce que le bouton fait avant d'ouvrir la boîte d'impression :
+
+- **écrit le périmètre en tête** — période, comptes, appareil, réseau, recherche,
+  date d'extraction et date d'impression. La barre de filtres ne s'imprime pas ;
+  un PDF qui ne dit pas sur quoi il porte est inutilisable trois semaines plus
+  tard ;
+- **déplie l'historique des modifications**, qui sinon n'apparaîtrait pas ;
+- **retire les sections jamais chargées** — la section sémantique non chargée
+  n'imprimait qu'un titre et un cadre vide ;
+- **force le thème clair** si le thème sombre est actif. Les navigateurs
+  n'impriment pas les fonds par défaut : le texte clair se retrouverait sur du
+  papier blanc. Basculer le thème ne suffit pas, les couleurs de série étant
+  écrites dans le SVG au tracé — d'où un redessin avant impression, et la
+  restauration de l'état après.
+
+La feuille d'impression interdit les coupures au milieu d'une carte, répète les
+en-têtes de tableau à chaque page, laisse le texte des cellules revenir à la
+ligne (à l'écran un tableau trop large défile, sur papier il serait coupé net) et
+masque tout ce qui n'a pas de sens sur du papier : commandes, bascules,
+infobulles.
+
+Compter une vingtaine de pages pour un rapport de 30 jours sur 86 comptes — le
+tableau de détail par campagne en occupe l'essentiel. Filtrez avant d'imprimer si
+vous visez un document court.
+
+---
+
 ## Onglet Tracking / Consent Mode
 
 `#vue=tracking`, alimenté par `data/tracking.json`

@@ -27,6 +27,13 @@
        title="Analyse de cannibalisation sémantique — page distincte, figée à sa date d'extraction">
       Cannibalisation <span aria-hidden="true">↗</span>
     </a>
+    <!-- Passe par la boîte d'impression du navigateur, seule voie possible sans
+         embarquer une bibliothèque de génération PDF. Le titre le dit, pour que
+         personne ne s'attende à un téléchargement direct. -->
+    <button type="button" class="btn btn--ghost" id="export-pdf"
+            title="Ouvre la boîte d'impression du navigateur — choisissez « Enregistrer au format PDF »">
+      PDF <span aria-hidden="true">↓</span>
+    </button>
     <button type="button" class="btn btn--icon" id="theme-toggle"
             aria-label="Basculer le thème clair / sombre" title="Thème clair / sombre">
       <span class="theme-toggle__glyph" aria-hidden="true"></span>
@@ -370,6 +377,14 @@
 
 <main id="contenu" data-view="report">
 
+  <!-- Visible à l'impression seulement : la barre de filtres ne s'imprime pas,
+       et un PDF qui ne dit pas sur quel périmètre il porte est inutilisable
+       quelques semaines plus tard. -->
+  <div class="print-only print-scope">
+    <p class="print-scope__line" id="print-scope"></p>
+    <p class="print-scope__stamp" id="print-stamp"></p>
+  </div>
+
   <div class="banner banner--warn" id="banner-demo" hidden>
     <strong>Données de démonstration.</strong>
     <span>Ce rapport affiche un jeu de données simulé. Lancez
@@ -530,7 +545,7 @@
   </section>
 
   <!-- ── Sémantique / requêtes ────────────────────────────────────────── -->
-  <section class="section" aria-labelledby="h-sem">
+  <section class="section" id="sem-section" aria-labelledby="h-sem">
     <div class="section__head">
       <h2 id="h-sem">Sémantique &amp; requêtes</h2>
       <p class="section__sub" id="sem-meta"></p>
@@ -763,6 +778,22 @@
         </div>
       </div>
       <div class="card__body card__body--flush" id="detail-body"></div>
+    </article>
+  </section>
+
+  <!-- ── Historique des modifications du reporting ─────────────────────────
+       Ce que l'outil a changé, pas ce que les comptes ont changé — ceux-là
+       vivent dans le journal de l'onglet Tracking. Replié par défaut : c'est
+       une référence qu'on consulte, pas un indicateur qu'on surveille. -->
+  <section class="section" id="releases-section" aria-labelledby="h-releases" hidden>
+    <article class="card card--wide">
+      <details class="releases" id="releases">
+        <summary>
+          <h2 class="card__title" id="h-releases">Historique des modifications du reporting</h2>
+          <p class="card__sub" id="releases-sub"></p>
+        </summary>
+        <div class="card__body" id="releases-body"></div>
+      </details>
     </article>
   </section>
 

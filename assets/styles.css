@@ -897,11 +897,95 @@ table.data tfoot td {
 
 /* ── Impression ───────────────────────────────────────────────────────────── */
 
+/* ── Historique des modifications : replié par défaut ─────────────────────── */
+
+.releases > summary {
+  cursor: pointer;
+  padding: 16px 18px;
+  display: block;
+  list-style: none;
+}
+.releases > summary::-webkit-details-marker { display: none; }
+/* Chevron dessiné en CSS : un caractère « ▸ » se désaligne d'une police à
+   l'autre, et l'attribut open suffit à le faire tourner. */
+.releases > summary::before {
+  content: "";
+  display: inline-block;
+  width: 0; height: 0;
+  margin-right: 10px;
+  vertical-align: 2px;
+  border-left: 6px solid var(--text-muted);
+  border-top: 5px solid transparent;
+  border-bottom: 5px solid transparent;
+  transition: transform 120ms ease;
+}
+.releases[open] > summary::before { transform: rotate(90deg); }
+.releases > summary:hover .card__title { color: var(--accent, var(--series-1)); }
+.releases > summary .card__title,
+.releases > summary .card__sub { display: inline-block; margin: 0; }
+.releases > summary .card__sub { display: block; margin-top: 4px; padding-left: 16px; }
+.releases > summary:focus-visible { outline: 2px solid var(--series-1); outline-offset: -2px; }
+
+/* ── Bloc réservé à l'impression ──────────────────────────────────────────── */
+
+.print-only { display: none; }
+.print-scope__line { font-size: 13px; font-weight: 600; margin: 0; }
+.print-scope__stamp { font-size: 11px; color: var(--text-muted); margin: 3px 0 0; }
+
+/* ── Impression ───────────────────────────────────────────────────────────── */
+
+@page {
+  margin: 12mm 10mm;
+}
+
 @media print {
-  .filterbar, .page-header__actions, .card__tools, .skip-link { display: none !important; }
+  /* Ce qui n'a pas de sens sur papier : commandes, bascules, liens d'action. */
+  .filterbar, .page-header__actions, .card__tools, .skip-link,
+  .live-refresh, .loader { display: none !important; }
+
+  .print-only { display: block; }
+  .print-scope {
+    padding: 0 0 10px;
+    margin-bottom: 12px;
+    border-bottom: 1px solid #999;
+  }
+
   body { background: #fff; }
-  .card, .kpi { break-inside: avoid; border-color: #999; }
   main { padding: 0; }
+
+  /* Une carte coupée en deux pages perd son titre ou son axe : on l'interdit.
+     Les tableaux longs, eux, DOIVENT pouvoir se répartir — les empêcher de
+     couper les tronquerait à une page. */
+  .card, .kpi, .section__head { break-inside: avoid; }
+  .card { border-color: #999; box-shadow: none; }
+  .card--wide .table-scroll { max-height: none; overflow: visible; }
+  table.data { break-inside: auto; }
+  table.data thead { display: table-header-group; }
+  table.data tr { break-inside: avoid; }
+
+  /* À l'écran, une cellule trop large fait défiler le tableau ; sur papier il
+     n'y a pas de défilement, la cellule serait simplement coupée au bord de la
+     feuille. Le texte revient donc à la ligne, et la police se resserre. */
+  table.data { table-layout: auto; width: 100%; font-size: 9.5px; }
+  /* « break-word » et non « anywhere » : avec « anywhere », la largeur minimale
+     d'une colonne devient celle d'un seul caractère, et la mise en page
+     automatique écrase les colonnes courtes — « DATE » s'affichait « DA / TE »
+     et « 14 août » sur deux lignes. */
+  table.data th, table.data td { white-space: normal; overflow-wrap: break-word; }
+  table.data th, table.data td { padding: 4px 6px; }
+  .cell-sub { font-size: 8.5px; }
+
+  /* Un titre seul en bas de page est un titre perdu. */
+  h1, h2, h3 { break-after: avoid; }
+
+  /* Les graphiques sont des SVG : ils restent vectoriels, donc nets à toute
+     échelle. Il suffit de les empêcher de déborder de la largeur du papier. */
+  svg { max-width: 100%; height: auto; }
+
+  /* Le survol n'existe pas sur papier. */
+  .tooltip, .crosshair, .hit { display: none !important; }
+
+  a[href^="http"]::after { content: " (" attr(href) ")"; font-size: 9px; color: #555; }
 }
 
 @media (prefers-reduced-motion: reduce) {

@@ -1,0 +1,264 @@
+{
+ "meta": {
+  "generated_at": "2026-08-17T11:41:56+02:00",
+  "commits_scanned": "tous",
+  "entries": 28,
+  "data_only_skipped": 56,
+  "first": "2026-08-11",
+  "last": "2026-08-14"
+ },
+ "entries": [
+  {
+   "sha": "27c857c",
+   "date": "2026-08-14",
+   "title": "Tracking : perimetre de 9 comptes, comparaison des balises, diagnostic d'import",
+   "kind": "feat",
+   "kindLabel": "Évolution",
+   "detail": "L'onglet ne regarde plus que les 9 comptes suivis (constante TRACKING_SCOPE) : spiice, contact, rencontre, femme liberee, easyflirt, swipe, onlydate, sexy 1, love top rencontre serieuses.",
+   "files": 5
+  },
+  {
+   "sha": "6975e89",
+   "date": "2026-08-14",
+   "title": "Onglet Tracking : separer une cassure de mesure d'une baisse de perf",
+   "kind": "feat",
+   "kindLabel": "Évolution",
+   "detail": "Le taux de Consent Mode granted/denied n'existe pas dans l'API Google Ads : sur la v25, %consent% renvoie zero champ.",
+   "files": 10
+  },
+  {
+   "sha": "c6c6bd0",
+   "date": "2026-08-14",
+   "title": "La repartition par sexe devient une carte du rapport",
+   "kind": "feat",
+   "kindLabel": "Évolution",
+   "detail": "L'onglet Sexes est supprime : sur les cinq cartes qu'il portait, une seule etait demandee.",
+   "files": 6
+  },
+  {
+   "sha": "5cf9957",
+   "date": "2026-08-14",
+   "title": "Mix d'appareils en base 100 et nouvel onglet Sexes",
+   "kind": "feat",
+   "kindLabel": "Évolution",
+   "detail": "Repartition du cout par compte : troisieme option « Base 100 » a cote de « Appareil » et « Reseau ».",
+   "files": 7
+  },
+  {
+   "sha": "91d8e5d",
+   "date": "2026-08-14",
+   "title": "Deux boutons Regenerer, vers les deux workflows",
+   "kind": "feat",
+   "kindLabel": "Évolution",
+   "detail": "Un par jeu de donnees, place a cote de ce qu il regenere : celui du Live ouvre refresh-live.yml, celui de l en-tete des indicateurs cles ouvre refresh-data.yml.",
+   "files": 4
+  },
+  {
+   "sha": "2d3e942",
+   "date": "2026-08-14",
+   "title": "Bouton Actualiser sur le Live, et ce qu il ne peut pas faire",
+   "kind": "feat",
+   "kindLabel": "Évolution",
+   "detail": "Le bouton relit data/live.json sans recharger la page, et la vue se redessine.",
+   "files": 4
+  },
+  {
+   "sha": "92908e2",
+   "date": "2026-08-14",
+   "title": "Page Cannibalisation semantique sur le dashboard",
+   "kind": "feat",
+   "kindLabel": "Évolution",
+   "detail": "Publie l export produit par le pipeline de cannibalisation comme page du dashboard, avec navigation dans les deux sens.",
+   "files": 5
+  },
+  {
+   "sha": "7365c72",
+   "date": "2026-08-13",
+   "title": "Sondes API : Auction Insights et categorisation de requetes",
+   "kind": "probe",
+   "kindLabel": "Sonde API",
+   "detail": "Ecrites pour dessiner le pipeline de cannibalisation semantique, gardees ici parce que c est ou vit leur dependance (fetch_ads_data) et parce qu elles documentent des capacites de l API utiles a ce depot aussi. probe_auction.py       interroge GoogleAdsFieldService : les metrique",
+   "files": 3
+  },
+  {
+   "sha": "2076ed3",
+   "date": "2026-08-13",
+   "title": "Efficacite des campagnes : le ROAS remplace les conversions",
+   "kind": "feat",
+   "kindLabel": "Évolution",
+   "detail": "Coût en abscisse, ROAS en ordonnee, un repere au seuil de rentabilite.",
+   "files": 4
+  },
+  {
+   "sha": "1ff2ecf",
+   "date": "2026-08-12",
+   "title": "Section AI Max : ce qu il capte, ce qu il convertit, a quel ROAS",
+   "kind": "feat",
+   "kindLabel": "Évolution",
+   "detail": "AI Max est recent et son modele de donnees ne se devine pas. probe_aimax.py interroge GoogleAdsFieldService, qui decrit l API elle-meme, plutot que de supposer un nom de champ.",
+   "files": 9
+  },
+  {
+   "sha": "85ce032",
+   "date": "2026-08-12",
+   "title": "La marge s ouvre sur le graphique",
+   "kind": "feat",
+   "kindLabel": "Évolution",
+   "detail": "La carte s ouvrait sur le tableau.",
+   "files": 3
+  },
+  {
+   "sha": "7e021a6",
+   "date": "2026-08-12",
+   "title": "Section Marge par campagne",
+   "kind": "feat",
+   "kindLabel": "Évolution",
+   "detail": "Valeur de conversion moins cout, sur la periode filtree.",
+   "files": 4
+  },
+  {
+   "sha": "d5df18a",
+   "date": "2026-08-12",
+   "title": "Live : filtre par action de conversion et par compte",
+   "kind": "feat",
+   "kindLabel": "Évolution",
+   "detail": "Le direct portait sur l'ensemble des comptes en bloc et sur toutes les actions confondues.",
+   "files": 5
+  },
+  {
+   "sha": "8c52974",
+   "date": "2026-08-12",
+   "title": "Onglet Live : la journee en cours face au meme jour J-7",
+   "kind": "feat",
+   "kindLabel": "Évolution",
+   "detail": "L alerte demandee — « aucune conversion depuis 1 heure » — aurait sonne en permanence.",
+   "files": 8
+  },
+  {
+   "sha": "474f804",
+   "date": "2026-08-12",
+   "title": "Le filtre de comptes s applique aux deux nouvelles sections",
+   "kind": "feat",
+   "kindLabel": "Évolution",
+   "detail": "Quatre graphiques le respectaient deja via termPairs().",
+   "files": 3
+  },
+  {
+   "sha": "545e943",
+   "date": "2026-08-12",
+   "title": "Section Types de correspondance : cannibalisation, velocite, rendement",
+   "kind": "feat",
+   "kindLabel": "Évolution",
+   "detail": "Trois graphiques, plus la correction du recouvrement lexical dont deux d entre eux dependaient.",
+   "files": 5
+  },
+  {
+   "sha": "68b9840",
+   "date": "2026-08-12",
+   "title": "Clustering d intention : comparaison en base 100",
+   "kind": "feat",
+   "kindLabel": "Évolution",
+   "detail": "Les barres empilees etaient en valeur absolue, si bien qu un compte a 14 k EUR n etait qu un trait a cote d un compte a 181 k EUR : impossible de comparer les compositions, qui sont pourtant la question posee a ce graphique.",
+   "files": 2
+  },
+  {
+   "sha": "9e58845",
+   "date": "2026-08-12",
+   "title": "Rend la section semantique atteignable par URL",
+   "kind": "feat",
+   "kindLabel": "Évolution",
+   "detail": "#sem=1 ouvre le rapport avec la section semantique deja chargee, et les selecteurs de chaque graphique (dx, id, nm) suivent le meme mecanisme que le reste de l etat.",
+   "files": 1
+  },
+  {
+   "sha": "6b0143c",
+   "date": "2026-08-12",
+   "title": "Fait fonctionner derive et intention sans cle API",
+   "kind": "feat",
+   "kindLabel": "Évolution",
+   "detail": "classify_terms.py classe l intention par marqueurs lexicaux, sans dependance ni appel de modele.",
+   "files": 2
+  },
+  {
+   "sha": "55017f1",
+   "date": "2026-08-12",
+   "title": "Ajoute un seuil de clics configurable, et chiffre ce qu il exclut",
+   "kind": "feat",
+   "kindLabel": "Évolution",
+   "detail": "--min-clicks filtre les termes sous un nombre de clics donne.",
+   "files": 2
+  },
+  {
+   "sha": "8e44347",
+   "date": "2026-08-12",
+   "title": "Ajoute la section semantique : derive, intention, n-grammes",
+   "kind": "feat",
+   "kindLabel": "Évolution",
+   "detail": "Trois analyses des termes de recherche, dans un jeu de donnees distinct charge a la demande (752 Ko) pour ne pas ralentir le rapport principal.",
+   "files": 7
+  },
+  {
+   "sha": "b520235",
+   "date": "2026-08-12",
+   "title": "Corrige le chevauchement de la derniere graduation, et actualise le README",
+   "kind": "fix",
+   "kindLabel": "Correctif",
+   "detail": "La derniere etiquette d'abscisse est alignee a droite alors que les autres sont centrees : le seuil anti-collision comparait des distances centre-a-centre et laissait passer un chevauchement.",
+   "files": 2
+  },
+  {
+   "sha": "ee324ee",
+   "date": "2026-08-12",
+   "title": "Corrige trois defauts reveles par un vrai MCC de 86 comptes",
+   "kind": "fix",
+   "kindLabel": "Correctif",
+   "detail": "- API v21 est bloquee par Google depuis aout 2026 : passage a v25.",
+   "files": 3
+  },
+  {
+   "sha": "38d7b55",
+   "date": "2026-08-11",
+   "title": "fetch_ads_data.py lit aussi le format google-ads.yaml",
+   "kind": "feat",
+   "kindLabel": "Évolution",
+   "detail": "google-ads.yaml est le format de configuration standard des clients Google Ads.",
+   "files": 1
+  },
+  {
+   "sha": "01e2bfd",
+   "date": "2026-08-11",
+   "title": "Ajoute get_refresh_token.py : flux OAuth sans dependance",
+   "kind": "feat",
+   "kindLabel": "Évolution",
+   "detail": "L'obtention du refresh token imposait un pip install google-auth-oauthlib et un copier-coller de secret.",
+   "files": 2
+  },
+  {
+   "sha": "4342b26",
+   "date": "2026-08-11",
+   "title": "Le workflow s'abstient au lieu d'echouer quand les secrets manquent",
+   "kind": "feat",
+   "kindLabel": "Évolution",
+   "detail": "Un workflow planifie qui echoue envoie un mail d'echec par jour tant que les secrets Google Ads ne sont pas renseignes.",
+   "files": 1
+  },
+  {
+   "sha": "38a4c53",
+   "date": "2026-08-11",
+   "title": "Corrige la colonne dupliquee dans la table des principales campagnes",
+   "kind": "fix",
+   "kindLabel": "Correctif",
+   "detail": "L'indicateur de classement etait ajoute en colonne sans verifier qu'il n'y figurait pas deja : avec « Cout » (le classement par defaut) la colonne apparaissait deux fois.",
+   "files": 1
+  },
+  {
+   "sha": "ddfaa8a",
+   "date": "2026-08-11",
+   "title": "Dashboard de reporting Google Ads multi-comptes",
+   "kind": "feat",
+   "kindLabel": "Évolution",
+   "detail": "Page statique sans dépendance : agrégation en mémoire et rendu SVG à la main. - fetch_ads_data.py : OAuth + API Google Ads, énumère les comptes du MCC, agrège en table de faits colonnaire.",
+   "files": 12
+  }
+ ]
+}
