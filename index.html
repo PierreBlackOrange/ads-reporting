@@ -781,15 +781,33 @@
     </article>
   </section>
 
-  <!-- ── Historique des modifications du reporting ─────────────────────────
-       Ce que l'outil a changé, pas ce que les comptes ont changé — ceux-là
-       vivent dans le journal de l'onglet Tracking. Replié par défaut : c'est
-       une référence qu'on consulte, pas un indicateur qu'on surveille. -->
+  <!-- ── Historique des modifications Google Ads ───────────────────────────
+       Qui a changé quoi dans les comptes, et de quelle valeur à quelle valeur.
+       Chargé au dépliement : la fenêtre de 28 jours pèse trop pour être
+       imposée à toutes les visites. -->
+  <section class="section" id="changes-section" aria-labelledby="h-changes">
+    <article class="card card--wide">
+      <details class="releases" id="changes">
+        <summary>
+          <h2 class="card__title" id="h-changes">Historique des modifications Google Ads</h2>
+          <p class="card__sub" id="changes-sub">
+            Qui a modifié quoi dans les comptes, sur les 28 derniers jours — déplier pour charger.
+          </p>
+        </summary>
+        <div class="banner banner--warn banner--inline" id="changes-note" hidden></div>
+        <div class="card__body" id="changes-body"></div>
+      </details>
+    </article>
+  </section>
+
+  <!-- ── Historique des versions du dashboard ──────────────────────────────
+       L'outil, pas les comptes : les deux sections sont voisines, leurs titres
+       doivent lever l'ambiguïté sans qu'on ait à les ouvrir. -->
   <section class="section" id="releases-section" aria-labelledby="h-releases" hidden>
     <article class="card card--wide">
       <details class="releases" id="releases">
         <summary>
-          <h2 class="card__title" id="h-releases">Historique des modifications du reporting</h2>
+          <h2 class="card__title" id="h-releases">Historique des versions du dashboard</h2>
           <p class="card__sub" id="releases-sub"></p>
         </summary>
         <div class="card__body" id="releases-body"></div>

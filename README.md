@@ -169,15 +169,76 @@ le publier délibérément : `git add -f data/aimax.json`.
 
 ---
 
-## Historique des modifications du reporting
+## Historique des modifications Google Ads
+
+Une section repliée en bas du rapport, alimentée par `data/changes.json`
+(`python scripts/fetch_change_history.py`). Chargée **au dépliement** : 28 jours
+de modifications sur 86 comptes pèsent trop pour être imposés à toutes les visites.
+
+C'est l'équivalent de l'écran « Historique des modifications » de l'interface :
+date et heure, compte, campagne › groupe d'annonces, type d'objet, action, et
+surtout **la valeur avant et après**. `old_resource` et `new_resource` ne
+contiennent que les champs modifiés, on lit donc directement « ROAS cible 1,40 →
+1,60 » ou « Statut ENABLED → PAUSED ».
+
+### La fenêtre de 28 jours n'est pas un choix
+
+`change_event` refuse toute requête au-delà de 30 jours et exige une fenêtre
+bornée des deux côtés. Sondé :
+
+| Requête | Réponse |
+|---|---|
+| `DURING LAST_30_DAYS` | `START_DATE_TOO_OLD` |
+| `change_date_time >= 'J-29'` | `CHANGE_DATE_RANGE_INFINITE` |
+| `BETWEEN 'J-28' AND 'J'` | ✅ 710 événements sur un compte |
+
+**Le rafraîchissement quotidien n'est donc pas un confort : ce qui n'est pas
+collecté aujourd'hui est perdu pour de bon.** L'étape est dans le workflow, et la
+section affiche la limite pour qu'une période vide ne se lise pas comme « rien n'a
+bougé ».
+
+### Les modifications en masse sont regroupées
+
+Ajouter 190 mots-clés négatifs produit 190 événements à la même minute — sur ce
+MCC, un seul groupe en compte **6 612**. Les lister un par un noierait le budget
+ou l'enchère cible qui, eux, comptent. Le regroupement se fait par (minute,
+compte, campagne, objet, action, champs touchés), avec le nombre en colonne et
+quelques valeurs d'exemple. Sur la fenêtre actuelle : **19 884 événements bruts →
+768 lignes**, soit 26 fois moins, sans rien perdre de ce qui se lit.
+
+### Auteurs : exclus par défaut
+
+`change_event.user_email` nomme la personne qui a fait chaque changement. Ce dépôt
+est public, donc le champ n'est **pas publié** — cinq auteurs distincts sont
+enregistrés côté Google Ads, la section le dit sans les nommer. Un journal
+nominatif sur Internet est un problème de RGPD, pas une fonctionnalité.
+
+Pour les afficher malgré tout (partie avant l'arobase seulement) :
+
+```bash
+python scripts/fetch_change_history.py --with-authors
+```
+
+C'est un choix à faire en connaissance de cause. Le script l'annonce à chaque
+exécution.
+
+### Deux journaux distincts, à ne pas confondre
+
+| Section | Contenu | Source |
+|---|---|---|
+| **Historique des modifications Google Ads** (rapport) | ce que les comptes ont changé, au détail | `change_event`, 28 jours |
+| **Journal des changements** (onglet Tracking) | le même, agrégé par jour, pour superposer aux courbes | `change_event` + le Sheet GTM / Didomi |
+| **Historique des versions du dashboard** (rapport) | ce que l'outil a changé | journal Git |
+
+## Historique des versions du dashboard
 
 Une section repliée en bas du rapport, alimentée par `data/releases.json`
 (`python scripts/build_releases.py`).
 
 Elle retrace ce que **l'outil** a changé — sections ajoutées, correctifs,
 changements de méthode de calcul. Pas ce que les comptes Google Ads ont changé :
-ceux-là ont leur propre journal dans l'onglet Tracking. Les mélanger laisserait
-croire qu'un ajout de graphique et une modification d'enchère sont de même nature.
+ceux-là ont la section juste au-dessus. Les mélanger laisserait croire qu'un ajout
+de graphique et une modification d'enchère sont de même nature.
 
 **Généré, pas écrit à la main.** Des notes de version tenues manuellement se
 périment au premier oubli, et un historique faux est pire qu'absent. Celui-ci se

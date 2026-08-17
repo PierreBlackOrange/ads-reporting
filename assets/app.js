@@ -196,6 +196,9 @@ const S = {
   topMetric: 'cost',
   mixDim: 'device',
   mixHidden: new Set(),
+  changes: null,
+  changesState: 'idle',  // idle | loading | ready | error
+
   releases: null,
   releasesState: 'idle', // idle | loading | ready | error
 
@@ -7382,12 +7385,170 @@ async function loadChangelog() {
 }
 
 /* ════════════════════════════════════════════════════════════════════════════
-   Historique des modifications du reporting
+   Historique des modifications Google Ads
+
+   Qui a changé quoi dans les comptes, et de quelle valeur à quelle valeur. C'est
+   l'équivalent de l'écran « Historique des modifications » de l'interface.
+
+   Deux propriétés à garder en tête, toutes deux affichées :
+
+   · La fenêtre est de 28 jours et ce n'est pas un choix — `change_event` refuse
+     au-delà de 30 jours et exige une fenêtre bornée. Une période sans
+     modification plus ancienne ne veut pas dire qu'il ne s'est rien passé.
+   · Les modifications en masse sont regroupées par minute : ajouter 190 mots-clés
+     négatifs produit 190 événements, et les lister noierait le budget ou
+     l'enchère cible qui, eux, comptent.
+
+   Le filtre de comptes de la barre du haut s'applique ; le filtre de période, non
+   — cette fenêtre a la sienne, annoncée en sous-titre.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+async function loadChanges() {
+  if (S.changesState !== 'idle') return;
+  S.changesState = 'loading';
+  els.changesSub.textContent = 'Chargement…';
+  try {
+    const res = await fetch('data/changes.json', { cache: 'no-cache' });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    S.changes = await res.json();
+  } catch (err) {
+    S.changesState = 'error';
+    els.changesSub.textContent =
+      'Historique indisponible — générez data/changes.json avec '
+      + '« python scripts/fetch_change_history.py ».';
+    console.info(`Historique des modifications Google Ads absent (${err.message}).`);
+    return;
+  }
+  if (!S.changes || !Array.isArray(S.changes.events) || !S.changes.events.length) {
+    S.changesState = 'error';
+    els.changesSub.textContent = 'Aucune modification enregistrée sur la fenêtre.';
+    return;
+  }
+  S.changesState = 'ready';
+  renderChanges();
+}
+
+function renderChanges() {
+  if (S.changesState !== 'ready') return;
+  const c = S.changes;
+  const meta = c.meta || {};
+
+  // Le filtre de comptes vaut ici comme partout ; l'appariement se fait par nom,
+  // ce jeu de données n'ayant pas les index de data.json.
+  const names = S.accounts.size
+    ? new Set([...S.accounts].map((i) => S.data.accounts[i] && S.data.accounts[i].name))
+    : null;
+  const rows = c.events.filter((e) => !names || names.has(e.account));
+
+  const bulk = rows.filter((e) => e.count > 1);
+  els.changesSub.textContent =
+    `${fmtInt(rows.length)} modification(s) du ${fmtDateLong(meta.date_start)} au `
+    + `${fmtDateLong(meta.date_end)}`
+    + (names ? ` · ${names.size} compte(s) filtré(s)` : ` · ${meta.accounts_scanned} comptes`)
+    + ` · ${fmtInt(meta.raw_events)} événements bruts regroupés par minute`
+    + ` · fenêtre fixe de ${meta.days} jours, indépendante du filtre de période`;
+
+  els.changesNote.replaceChildren();
+  const notes = [];
+  notes.push(`L'API ne conserve que ${meta.api_max_days} jours d'historique : une `
+    + `période plus ancienne sans modification ne veut pas dire qu'il ne s'est rien passé.`);
+  if (bulk.length) {
+    notes.push(`${bulk.length} ligne(s) regroupent plusieurs modifications faites à la `
+      + `même minute (jusqu'à ${fmtInt(Math.max(...bulk.map((e) => e.count)))} sur une `
+      + `seule ligne) : la colonne « Nombre » le dit, et les valeurs affichées sont des exemples.`);
+  }
+  if (!meta.authors_published && meta.authors_seen) {
+    notes.push(`${meta.authors_seen} auteur(s) distincts sont enregistrés par Google Ads mais `
+      + `ne sont pas publiés ici : ce dépôt est public. Pour les afficher : `
+      + `fetch_change_history.py --with-authors.`);
+  }
+  if (meta.truncated) {
+    notes.push(`${fmtInt(meta.truncated)} ligne(s) plus anciennes ont été écartées par le `
+      + `plafond de taille du fichier.`);
+  }
+  const strong = document.createElement('strong');
+  strong.textContent = 'Portée.';
+  els.changesNote.appendChild(strong);
+  const span = document.createElement('span');
+  span.textContent = notes.join(' ');
+  els.changesNote.appendChild(span);
+  els.changesNote.hidden = false;
+
+  if (!rows.length) {
+    emptyState(els.changesBody,
+      'Aucune modification sur les comptes sélectionnés. Le filtre de comptes de la '
+      + 'barre du haut s\'applique à cette section.');
+    return;
+  }
+
+  const cols = [
+    { key: 'at', label: 'Date', text: true },
+    { key: 'account', label: 'Compte', text: true },
+    { key: 'target', label: 'Où', text: true },
+    { key: 'typeLabel', label: 'Objet', text: true },
+    { key: 'operationLabel', label: 'Action', text: true },
+    // « Nombre » avant le libellé : c'est la colonne qui dit qu'une ligne en
+    // regroupe six mille, et placée après la plus large elle sortait de l'écran.
+    { key: 'count', label: 'Nombre', fmt: fmtInt },
+    { key: 'what', label: 'Ce qui a changé', text: true },
+    { key: 'clientLabel', label: 'Source', text: true },
+  ];
+  if (meta.authors_published) {
+    cols.push({ key: 'author', label: 'Auteur', text: true });
+  }
+
+  renderTable(els.changesBody, {
+    scroll: true,
+    caption: 'Historique des modifications Google Ads',
+    cols,
+    rows: rows.slice(0, 400).map((e) => ({
+      at: `${fmtDateShort(e.at.slice(0, 10))} ${e.at.slice(11, 16)}`,
+      _swatch: seriesColor(e.operation === 'REMOVE' ? 8
+        : e.operation === 'CREATE' ? 3 : 4),
+      account: e.account,
+      target: e.adGroup ? `${e.campaign} › ${e.adGroup}` : (e.campaign || '—'),
+      typeLabel: e.typeLabel,
+      operationLabel: e.operationLabel,
+      what: changeSummary(e),
+      count: e.count,
+      author: e.author || '—',
+      clientLabel: e.clientLabel,
+    })),
+  });
+
+  if (rows.length > 400) {
+    els.changesSub.textContent += ` · 400 lignes affichées sur ${fmtInt(rows.length)}`;
+  }
+}
+
+/**
+ * « ROAS cible 1,80 → 1,20 », « Statut ENABLED → PAUSED ».
+ *
+ * Un champ ajouté n'a pas d'avant, un champ supprimé n'a pas d'après : la flèche
+ * seule le dit, sans qu'il faille inventer une valeur de départ.
+ */
+function changeSummary(e) {
+  if (!e.changes || !e.changes.length) {
+    // Certains événements ne portent que des champs de structure. Le dire est
+    // plus honnête qu'une ligne vide.
+    return e.samples && e.samples.length ? e.samples.join(', ') : 'création / suppression';
+  }
+  const parts = e.changes.slice(0, 3).map((c) => {
+    if (c.before === '—') return `${c.label} → ${c.after}`;
+    if (c.after === '—') return `${c.label} ${c.before} → retiré`;
+    return `${c.label} ${c.before} → ${c.after}`;
+  });
+  if (e.changes.length > 3) parts.push(`+${e.changes.length - 3} autre(s)`);
+  return parts.join(' · ');
+}
+
+/* ════════════════════════════════════════════════════════════════════════════
+   Historique des versions du dashboard
 
    Ce que l'OUTIL a changé — sections ajoutées, correctifs, changements de méthode
-   de calcul. Pas ce que les comptes Google Ads ont changé : ceux-là ont leur
-   propre journal dans l'onglet Tracking. Les mélanger laisserait croire qu'un
-   ajout de graphique et une modification d'enchère sont de même nature.
+   de calcul. Pas ce que les comptes Google Ads ont changé : ceux-là ont la section
+   juste au-dessus. Les mélanger laisserait croire qu'un ajout de graphique et une
+   modification d'enchère sont de même nature.
 
    Le fichier est produit par scripts/build_releases.py depuis le journal Git,
    plutôt que tenu à la main : des notes de version manuelles se périment au
@@ -7427,10 +7588,10 @@ function renderReleases() {
   els.releasesSection.hidden = false;
 
   els.releasesSub.textContent =
-    `${list.length} modification(s) de l'outil, du ${fmtDateLong(r.meta.first)} au `
+    `${list.length} version(s) de l'outil, du ${fmtDateLong(r.meta.first)} au `
     + `${fmtDateLong(r.meta.last)} · déduit du journal Git, hors rafraîchissements `
-    + `de données (${r.meta.data_only_skipped} écartés) · les changements des comptes `
-    + `Google Ads sont dans l'onglet Tracking`;
+    + `de données (${r.meta.data_only_skipped} écartés) · les modifications des comptes `
+    + `Google Ads sont dans la section juste au-dessus`;
 
   renderTable(els.releasesBody, {
     scroll: true,
@@ -7722,6 +7883,8 @@ function cacheEls() {
     actionSummary: 'action-summary',
     releasesSection: 'releases-section', releases: 'releases',
     releasesSub: 'releases-sub', releasesBody: 'releases-body',
+    changes: 'changes', changesSub: 'changes-sub',
+    changesNote: 'changes-note', changesBody: 'changes-body',
     semSection: 'sem-section',
     exportPdf: 'export-pdf', printScope: 'print-scope', printStamp: 'print-stamp',
   };
@@ -7835,6 +7998,12 @@ function wireControls() {
 
   els.exportCsv.addEventListener('click', exportCsv);
   els.exportPdf.addEventListener('click', exportPdf);
+
+  // Chargé au premier dépliement : 28 jours de modifications sur 86 comptes
+  // pèsent trop pour être imposés à toutes les visites du rapport.
+  els.changes.addEventListener('toggle', () => {
+    if (els.changes.open) loadChanges();
+  });
   els.semLoad.addEventListener('click', loadTerms);
 
   // Un clic hors d'un menu le referme.

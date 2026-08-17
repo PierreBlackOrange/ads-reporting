@@ -105,6 +105,20 @@ jobs:
           GOOGLE_ADS_LOGIN_CUSTOMER_ID: ${{ secrets.GOOGLE_ADS_LOGIN_CUSTOMER_ID }}
         run: python scripts/fetch_tracking.py --days "${{ github.event.inputs.days || '180' }}"
 
+      # Historique des modifications Google Ads. Le rafraîchissement quotidien
+      # n'est pas un confort : l'API ne conserve que 28 jours, donc ce qui n'est
+      # pas collecté aujourd'hui est perdu pour de bon.
+      - name: Récupérer l'historique des modifications
+        if: steps.check.outputs.ready == 'true'
+        continue-on-error: true
+        env:
+          GOOGLE_ADS_DEVELOPER_TOKEN:   ${{ secrets.GOOGLE_ADS_DEVELOPER_TOKEN }}
+          GOOGLE_ADS_CLIENT_ID:         ${{ secrets.GOOGLE_ADS_CLIENT_ID }}
+          GOOGLE_ADS_CLIENT_SECRET:     ${{ secrets.GOOGLE_ADS_CLIENT_SECRET }}
+          GOOGLE_ADS_REFRESH_TOKEN:     ${{ secrets.GOOGLE_ADS_REFRESH_TOKEN }}
+          GOOGLE_ADS_LOGIN_CUSTOMER_ID: ${{ secrets.GOOGLE_ADS_LOGIN_CUSTOMER_ID }}
+        run: python scripts/fetch_change_history.py
+
       # Timeline des changements techniques, depuis un Google Sheet publié.
       # Sans le secret CHANGELOG_SHEET_ID, l'étape ne fait rien : l'onglet
       # Tracking fonctionne sans, il n'affiche simplement aucun repère.
@@ -134,7 +148,8 @@ jobs:
           # absent échoue, et un jeu de données optionnel a le droit de manquer.
           FILES=""
           for f in data/data.json data/aimax.json data/gender.json \
-                   data/tracking.json data/changelog.json; do
+                   data/tracking.json data/changelog.json data/changes.json \
+                   data/releases.json; do
             [ -f "$f" ] && FILES="$FILES $f"
           done
           if [ -z "$FILES" ]; then
