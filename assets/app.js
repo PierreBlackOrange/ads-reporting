@@ -5851,15 +5851,27 @@ function trkVerdictColor(key) {
  * le périmètre, `gdm_Spiice_App` et `Spiice_Display` n'y sont pas.
  */
 const TRACKING_SCOPE = [
+  // MCC Easyflirt
   'gdm_spiice-google-fr',
   'gdm_jacquie_michel_contact_fr',
   '2lm_jacquie_et_michel_rencontre',
   'gdm_femme-liberee_homme',
-  'Easyflirt',
   'JM_SWIPE',
   'Onlydate_93781',
+  'phoenix_franco',
+  // MCC Comparateur
   'fr_sexy_1',
   'fr_love_toprencontreserieuse',
+  'es_top5decitas',
+  'be_sexy_top-site-de-rencontre',
+  // « Easyflirt » a été retiré : le compte porte ce nom mais appartient à
+  // MCC_Agence, donc hors des deux MCC retenus. Le nom ne dit pas le
+  // rattachement.
+  //
+  // gdm_Spiice_App reste dehors bien qu'il soit dans le MCC Easyflirt : ses
+  // conversions sont des installations d'application sans valeur monétaire, à
+  // 0,56 € de CPA. Mêlées aux inscriptions à 55 €, elles feraient dériver tous
+  // les taux du diagnostic sans qu'aucune alerte ne devienne actionnable.
 ];
 
 /**
