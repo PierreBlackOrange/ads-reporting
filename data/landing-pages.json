@@ -54,6 +54,28 @@
    "url": "https://www.spiice.com/jW4/mzv",
    "image": "assets/lp/spiice-jW4-mzv.jpg",
    "captured_at": "2026-08-18"
+  },
+  {
+   "experiment": "AB test LP",
+   "account": "fr_sexy_1",
+   "arm": "control",
+   "label": "Témoin — tpl-b",
+   "url": "https://top5-site-rencontre.com/tpl-b",
+   "image": "assets/lp/top5-tpl-b.jpg",
+   "partial": true,
+   "captured_at": "2026-08-18",
+   "partial_note": "Constate a l'oeil : la liste du comparateur est coupee au 3e resultat."
+  },
+  {
+   "experiment": "AB test LP",
+   "account": "fr_sexy_1",
+   "arm": "variant",
+   "label": "Variante — e0a",
+   "url": "https://top5-site-rencontre.com/e0a",
+   "image": "assets/lp/top5-e0a.jpg",
+   "partial": true,
+   "captured_at": "2026-08-18",
+   "partial_note": "Constate a l'oeil : la liste du comparateur est coupee au 3e resultat."
   }
  ]
 }

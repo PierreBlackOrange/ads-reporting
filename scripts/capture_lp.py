@@ -64,6 +64,27 @@ def find_browser() -> str:
     sys.exit("Aucun navigateur basé sur Chromium trouvé (Edge, Chrome ou Chromium).")
 
 
+"""
+DÉTECTION AUTOMATIQUE DES PAGES TRONQUÉES : ESSAYÉE, ABANDONNÉE
+
+Une capture au format d'un écran ne montre qu'un écran. Savoir si la page
+continue en dessous serait utile — une capture partielle laisse croire que la
+page s'arrête là.
+
+Tentative : capturer dans une fenêtre trois fois plus haute et chercher, en
+remontant depuis le bas, la première ligne de pixels non uniforme. Résultat : les
+six pages ressortaient « tronquées » avec une hauteur exactement égale à celle de
+la sonde. Le navigateur peint le fond du corps sur toute la fenêtre, donc l'image
+n'est jamais uniforme en bas et l'analyse de pixels ne peut pas distinguer le
+contenu du remplissage. La vraie réponse est dans le DOM (scrollHeight), hors de
+portée des options en ligne de commande.
+
+Le drapeau « partial » du manifeste est donc posé À LA MAIN, quand on a
+effectivement constaté que la page continue. Une mesure qu'on ne sait pas faire
+correctement vaut mieux absente qu'automatisée de travers.
+"""
+
+
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Captures des pages de destination.")
     p.add_argument("--width", type=int, default=624,
@@ -118,20 +139,37 @@ def main() -> None:
         out = PROJECT_DIR / rel
         out.parent.mkdir(parents=True, exist_ok=True)
 
-        with tempfile.TemporaryDirectory() as tmp:
-            shot = Path(tmp) / "shot.png"
+        # Une page peut imposer sa propre fenêtre : les pages Spiice ont besoin de
+        # 624 px de large, un comparateur pourrait en demander plus.
+        vw, vh = args.width, args.height
+        if page.get("viewport"):
+            try:
+                a, b = str(page["viewport"]).lower().split("x")
+                vw, vh = int(a), int(b)
+            except ValueError:
+                print(f"  viewport illisible pour {url}, valeur par défaut utilisée")
+
+        def shoot(dest: Path, w: int, h: int, profile: Path) -> bool:
             cmd = [
                 browser, "--headless=new", "--disable-gpu", "--no-first-run",
                 "--no-default-browser-check", "--hide-scrollbars",
-                f"--window-size={args.width},{args.height}",
+                f"--window-size={w},{h}",
                 f"--virtual-time-budget={args.wait}",
-                f"--user-data-dir={Path(tmp) / 'profile'}",
-                f"--screenshot={shot}", url,
+                f"--user-data-dir={profile}",
+                f"--screenshot={dest}", url,
             ]
-            res = subprocess.run(cmd, capture_output=True, text=True)
-            if not shot.exists():
-                print(f"  ÉCHEC {url}\n    {res.stderr.strip()[:300]}")
+            r = subprocess.run(cmd, capture_output=True, text=True)
+            if not dest.exists():
+                print(f"  ÉCHEC {url}\n    {r.stderr.strip()[:300]}")
+                return False
+            return True
+
+        with tempfile.TemporaryDirectory() as tmp:
+            shot = Path(tmp) / "shot.png"
+            if not shoot(shot, vw, vh, Path(tmp) / "profile"):
                 continue
+            # « partial » n'est pas déduit ici : voir la note en tête de fichier.
+            page.pop("full_height", None)
 
             if pillow:
                 from PIL import Image

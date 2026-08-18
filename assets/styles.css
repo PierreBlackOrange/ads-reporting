@@ -1157,6 +1157,7 @@ table.data tfoot td {
   overflow-wrap: anywhere;
 }
 .lab-shot figcaption a { color: var(--text-secondary); }
+.lab-shot__cut { color: var(--series-4); }
 
 @media (prefers-reduced-motion: reduce) {
   .lab-shot img { transition: none; }

@@ -8052,6 +8052,16 @@ function renderLabShot(shot) {
     when.textContent = ` · capture du ${fmtDateShort(shot.captured_at)}`;
     cap.appendChild(when);
   }
+  // Une capture partielle qui ne se signale pas laisse croire que la page
+  // s'arrête là. Le drapeau est posé à la main dans le manifeste : la détection
+  // automatique s'est révélée fausse (voir scripts/capture_lp.py).
+  if (shot.partial) {
+    const cut = document.createElement('span');
+    cut.className = 'lab-shot__cut';
+    cut.textContent = ' · haut de page seulement';
+    cut.title = shot.partial_note || 'La page continue sous le cadre.';
+    cap.appendChild(cut);
+  }
   fig.appendChild(cap);
   return fig;
 }
