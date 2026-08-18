@@ -14,7 +14,8 @@
  ],
  "meta": {
   "viewport": "624x1355",
-  "note": "Largeur choisie parce que la page a une largeur minimale supérieure à 390 px : plus étroit, le bouton « Se connecter » et le CTA sortent du cadre."
+  "note": "Largeur choisie parce que la page a une largeur minimale supérieure à 390 px : plus étroit, le bouton « Se connecter » et le CTA sortent du cadre.",
+  "last_capture": "2026-08-18"
  },
  "pages": [
   {
@@ -33,6 +34,25 @@
    "label": "Témoin — pack pastel",
    "url": "https://www.spiice.com/jW4/Sex",
    "image": "assets/lp/spiice-jW4-Sex.jpg",
+   "captured_at": "2026-08-18"
+  },
+  {
+   "_note": "Attribution déduite des données, pas d'une consigne : la campagne du bras témoin s'appelle « Rencontre Mix #1- N5M », donc N5M est la page de base et mzv la nouvelle. Cohérent avec le nom du test, « N5M vs mzv ».",
+   "experiment": "Test Variante N5M vs mzv",
+   "account": "gdm_spiice-google-fr",
+   "arm": "control",
+   "label": "Témoin — N5M",
+   "url": "https://www.spiice.com/jW4/N5M",
+   "image": "assets/lp/spiice-jW4-N5M.jpg",
+   "captured_at": "2026-08-18"
+  },
+  {
+   "experiment": "Test Variante N5M vs mzv",
+   "account": "gdm_spiice-google-fr",
+   "arm": "variant",
+   "label": "Variante — mzv",
+   "url": "https://www.spiice.com/jW4/mzv",
+   "image": "assets/lp/spiice-jW4-mzv.jpg",
    "captured_at": "2026-08-18"
   }
  ]

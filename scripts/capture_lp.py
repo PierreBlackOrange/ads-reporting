@@ -73,7 +73,11 @@ def parse_args() -> argparse.Namespace:
                    help="réduction appliquée à l'image finale (défaut : 0,75)")
     p.add_argument("--quality", type=int, default=82, help="qualité JPEG")
     p.add_argument("--only", default=None, help="ne traiter que les URL contenant ce texte")
-    p.add_argument("--wait", type=int, default=25000,
+    # 45 s et non 25 : à 25 s, le bouton « Se connecter avec Google » n'était pas
+    # encore rendu sur une des pages. La capture donnait alors l'impression que ce
+    # bouton manquait sur un bras du test — une différence inventée par l'outil de
+    # mesure, exactement ce qu'un dashboard ne doit jamais produire.
+    p.add_argument("--wait", type=int, default=45000,
                    help="temps virtuel accordé au chargement, en ms")
     return p.parse_args()
 
@@ -139,9 +143,13 @@ def main() -> None:
                 img.save(out, "JPEG", quality=args.quality, optimize=True,
                          progressive=True)
             else:
-                # Sans Pillow, on conserve le PNG brut sous le nom demandé plutôt
-                # que de prétendre produire un JPEG.
+                # Sans Pillow, on conserve le PNG brut plutôt que de prétendre
+                # produire un JPEG. Le manifeste doit suivre : sans cette ligne,
+                # il pointait vers un .jpg jamais écrit et le dashboard affichait
+                # une image cassée — sans rien signaler, puisqu'une balise <img>
+                # en échec reste silencieuse.
                 out = out.with_suffix(".png")
+                page["image"] = str(out.relative_to(PROJECT_DIR)).replace("\\", "/")
                 shutil.copyfile(shot, out)
 
         page["captured_at"] = today
