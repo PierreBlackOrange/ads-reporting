@@ -196,6 +196,11 @@ const S = {
   topMetric: 'cost',
   mixDim: 'device',
   mixHidden: new Set(),
+  lab: null,
+  labState: 'idle',      // idle | loading | ready | error
+  labSpan: '12',         // profondeur de la chronologie, en mois
+  labPhase: 'all',
+
   changes: null,
   changesState: 'idle',  // idle | loading | ready | error
 
@@ -4535,6 +4540,8 @@ function writeHash() {
   if (S.trkGrain !== 'week') p.set('tg', S.trkGrain);
   if (S.trkScale !== 'index') p.set('ts', S.trkScale);
   if (S.trkLagScale !== 'share') p.set('tl', S.trkLagScale);
+  if (S.labSpan !== '12') p.set('xs', S.labSpan);
+  if (S.labPhase !== 'all') p.set('xp', S.labPhase);
   if (S.trkCat) p.set('tc', S.trkCat);
   if (S.trkTagScale !== 'volume') p.set('tt', S.trkTagScale);
   if (S.aimaxMetric !== 'cost') p.set('am', S.aimaxMetric);
@@ -4562,7 +4569,7 @@ function readHash() {
 
   // « gender » a existé comme troisième onglet : un ancien lien retombe sur le
   // rapport, où la répartition par sexe vit désormais.
-  if (['report', 'live', 'tracking'].includes(p.get('vue'))) S.view = p.get('vue');
+  if (['report', 'live', 'tracking', 'lab'].includes(p.get('vue'))) S.view = p.get('vue');
   const r = p.get('r');
   if (r) S.range = r;
   if (p.get('s')) S.start = p.get('s');
@@ -4581,6 +4588,8 @@ function readHash() {
   if (['day', 'week', 'month'].includes(p.get('tg'))) S.trkGrain = p.get('tg');
   if (['index', 'volume'].includes(p.get('ts'))) S.trkScale = p.get('ts');
   if (['volume', 'share'].includes(p.get('tl'))) S.trkLagScale = p.get('tl');
+  if (['6', '12', '36', '120'].includes(p.get('xs'))) S.labSpan = p.get('xs');
+  if (p.get('xp')) S.labPhase = p.get('xp');   // validé à l'arrivée des données
   if (p.get('tc')) S.trkCat = p.get('tc');   // validé à l'arrivée des données
   if (['volume', 'index'].includes(p.get('tt'))) S.trkTagScale = p.get('tt');
 
@@ -4618,7 +4627,12 @@ function onFilterChange() {
   // même quand on le change depuis le rapport.
   if (S.liveState === 'ready') renderLive();
   if (S.trackingState === 'ready') renderTracking();
-  if (S.view === 'tracking') { updateFilterSummaries(); writeHash(); return; }
+  if (S.labState === 'ready') renderLab();
+  if (S.view === 'tracking' || S.view === 'lab') {
+    updateFilterSummaries();
+    writeHash();
+    return;
+  }
   if (S.view === 'live') {
     // Le rapport ne se redessine pas ici : c'est lui qui écrit l'URL d'ordinaire.
     updateFilterSummaries();
@@ -7777,6 +7791,671 @@ function exportPdf() {
   window.addEventListener('afterprint', restore);
   window.print();
 }
+/* ════════════════════════════════════════════════════════════════════════════
+   Onglet Expériences — registre de laboratoire
+
+   Les A/B tests Google Ads : chaque expérience a deux bras, un témoin et une
+   variante, chacun rattaché à une campagne. On compare donc les deux côtés sur
+   les mêmes métriques, sur la même fenêtre, ce qui est exactement ce qu'un test
+   doit permettre.
+
+   TROIS PRÉCAUTIONS, TOUTES AFFICHÉES
+
+   · « ENABLED » ne veut pas dire « en cours ». Sur ce MCC, 43 expériences portent
+     ce statut et certaines se terminaient en 2022. La phase est donc déduite du
+     statut ET des dates, jamais du statut seul.
+   · L'indice de confiance porte sur le TAUX DE CONVERSION, pas sur le ROAS. Un
+     test de proportions suppose des issues binaires par clic ; les conversions de
+     Google sont fractionnaires et peuvent être multiples par clic. L'indice est
+     donc un signal, pas un verdict — et la carte le dit.
+   · Un test à 50/50 sur deux campagnes distinctes n'isole pas parfaitement les
+     deux populations : saisonnalité, apprentissage de l'algorithme et
+     cannibalisation entre les deux bras existent. On lit une tendance.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/* Colonnes de arms[].daily : [date, impr, clics, coût, conv, allConv, valeur] */
+const LB = { DATE: 0, IMPR: 1, CLICKS: 2, COST: 3, CONV: 4, ALL: 5, VALUE: 6 };
+
+const LAB_PHASES = {
+  en_cours:   { label: 'en cours',   pill: 'live', rank: 0 },
+  programmee: { label: 'programmée', pill: 'soon', rank: 1 },
+  brouillon:  { label: 'brouillon',  pill: 'soon', rank: 2 },
+  promue:     { label: 'promue',     pill: 'done', rank: 3 },
+  arretee:    { label: 'arrêtée',    pill: 'stop', rank: 4 },
+  abandonnee: { label: 'abandonnée', pill: 'dead', rank: 5 },
+  supprimee:  { label: 'supprimée',  pill: 'dead', rank: 6 },
+  inconnue:   { label: 'indéterminée', pill: 'dead', rank: 7 },
+};
+
+/* Seuil de confiance au-delà duquel on parle de résultat, et non de tendance. */
+const LAB_CONF = 0.95;
+
+/** Indicateurs comparés, dans l'ordre de lecture. */
+const LAB_STATS = [
+  { key: 'cost', label: 'Coût', fmt: (v) => fmtMoney(v, { compact: true }), dir: 0 },
+  { key: 'clicks', label: 'Clics', fmt: fmtInt, dir: 0 },
+  { key: 'conv', label: 'Conversions', fmt: fmtNum1, dir: 1 },
+  { key: 'cvr', label: 'Taux de conv.', fmt: (v) => fmtPct(v), dir: 1 },
+  { key: 'cpa', label: 'CPA', fmt: fmtMoney, dir: -1 },
+  { key: 'roas', label: 'ROAS', fmt: fmtRatio, dir: 1 },
+];
+
+/**
+ * Loi normale centrée réduite, via une approximation d'erf.
+ *
+ * Abramowitz & Stegun 7.1.26 : erreur maximale 1,5·10⁻⁷, largement sous la
+ * précision utile ici. Écrite à la main parce qu'aucune bibliothèque externe
+ * n'est chargeable dans cette page.
+ */
+function erf(x) {
+  const sign = x < 0 ? -1 : 1;
+  const t = 1 / (1 + 0.3275911 * Math.abs(x));
+  const y = 1 - (((((1.061405429 * t - 1.453152027) * t) + 1.421413741) * t
+    - 0.284496736) * t + 0.254829592) * t * Math.exp(-x * x);
+  return sign * y;
+}
+
+const normalCdf = (z) => 0.5 * (1 + erf(z / Math.SQRT2));
+
+/**
+ * Test de proportions sur le taux de conversion des deux bras.
+ *
+ * Renvoie la confiance bilatérale et le nombre de clics qu'il manquerait, par
+ * bras, pour trancher l'écart observé à 95 % avec 80 % de puissance. Dire « il
+ * manque N clics » est plus utile que « non significatif », qui laisse croire
+ * qu'il n'y a rien à voir.
+ */
+function labSignificance(a, b) {
+  const n1 = a.clicks;
+  const n2 = b.clicks;
+  if (!n1 || !n2) return null;
+  const p1 = a.conv / n1;
+  const p2 = b.conv / n2;
+  const pool = (a.conv + b.conv) / (n1 + n2);
+  const se = Math.sqrt(pool * (1 - pool) * (1 / n1 + 1 / n2));
+  if (!isFinite(se) || se <= 0) return null;
+  const z = (p2 - p1) / se;
+  const confidence = 2 * normalCdf(Math.abs(z)) - 1;
+
+  // Taille par bras nécessaire pour l'écart observé (α 5 % bilatéral, β 20 %).
+  const diff = Math.abs(p2 - p1);
+  let need = null;
+  if (diff > 0) {
+    const n = (1.959964 + 0.841621) ** 2 * 2 * pool * (1 - pool) / (diff * diff);
+    need = Math.max(0, Math.ceil(n) - Math.min(n1, n2));
+  }
+  return { z, confidence, need, p1, p2 };
+}
+
+/** Totaux d'un bras sur sa fenêtre. */
+function labArmTotals(arm) {
+  const t = { impr: 0, clicks: 0, cost: 0, conv: 0, all: 0, value: 0, days: 0 };
+  for (const r of (arm.daily || [])) {
+    t.impr += r[LB.IMPR];
+    t.clicks += r[LB.CLICKS];
+    t.cost += r[LB.COST];
+    t.conv += r[LB.CONV];
+    t.all += r[LB.ALL];
+    t.value += r[LB.VALUE];
+    t.days += 1;
+  }
+  t.cvr = t.clicks ? t.conv / t.clicks : NaN;
+  t.cpa = t.conv ? t.cost / t.conv : NaN;
+  t.roas = t.cost ? t.value / t.cost : NaN;
+  return t;
+}
+
+function labControl(x) { return (x.arms || []).find((a) => a.control) || null; }
+function labVariant(x) { return (x.arms || []).find((a) => !a.control) || null; }
+
+/** Expériences retenues par le filtre de comptes de la barre du haut. */
+function labRows() {
+  const l = S.lab;
+  if (!l) return [];
+  if (!S.accounts.size) return l.experiments;
+  const names = new Set(
+    [...S.accounts].map((i) => S.data.accounts[i] && S.data.accounts[i].name)
+  );
+  return l.experiments.filter((x) => names.has(x.account));
+}
+
+function labDays(from, to) {
+  return Math.round((parseDate(to) - parseDate(from)) / 86400000);
+}
+
+/* ── Indicateurs ───────────────────────────────────────────────────────────── */
+
+function renderLabKpis(rows) {
+  els.labKpi.replaceChildren();
+  const live = rows.filter((x) => x.phase === 'en_cours');
+  const dead = rows.filter((x) => x.phase === 'abandonnee');
+  const done = rows.filter((x) => x.phase === 'promue');
+
+  const spend = live.reduce((s, x) => s + (x.arms || [])
+    .reduce((a, arm) => a + labArmTotals(arm).cost, 0), 0);
+
+  const tile = (label, value, foot, note) => {
+    const box = document.createElement('div');
+    box.className = 'kpi';
+    const l = document.createElement('div');
+    l.className = 'kpi__label';
+    l.textContent = label;
+    box.appendChild(l);
+    const v = document.createElement('div');
+    v.className = 'kpi__value';
+    v.textContent = value;
+    box.appendChild(v);
+    if (foot) {
+      const f = document.createElement('div');
+      f.className = 'kpi__foot';
+      const d = document.createElement('span');
+      d.className = 'kpi__delta kpi__delta--flat';
+      d.textContent = foot;
+      f.appendChild(d);
+      box.appendChild(f);
+    }
+    if (note) {
+      const n = document.createElement('div');
+      n.className = 'kpi__note';
+      n.textContent = note;
+      box.appendChild(n);
+    }
+    els.labKpi.appendChild(box);
+  };
+
+  tile('En cours', fmtInt(live.length),
+    live.length ? `${new Set(live.map((x) => x.account)).size} compte(s)` : 'aucun test actif',
+    'statut actif et fenêtre de dates couvrant aujourd\'hui');
+
+  tile('Dépense sous test', fmtMoney(spend, { compact: true }),
+    live.length ? 'sur la fenêtre des tests en cours' : '—',
+    'somme des deux bras : le témoin dépense aussi');
+
+  tile('Déjà promues', fmtInt(done.length),
+    `${rows.length} expérience(s) au registre`,
+    'variante adoptée en campagne définitive');
+
+  tile('À nettoyer', fmtInt(dead.length),
+    dead.length ? 'statut actif, fenêtre passée ou jamais lancée' : 'registre propre',
+    'brouillons et tests jamais clôturés qui encombrent les comptes');
+}
+
+/* ── Fiches des tests en cours ─────────────────────────────────────────────── */
+
+function labStatBlock(label, value, delta, dir) {
+  const box = document.createElement('div');
+  box.className = 'lab-stat';
+  const l = document.createElement('div');
+  l.className = 'lab-stat__label';
+  l.textContent = label;
+  box.appendChild(l);
+  const v = document.createElement('div');
+  v.className = 'lab-stat__value';
+  v.textContent = value;
+  box.appendChild(v);
+  if (delta !== null && delta !== undefined && isFinite(delta)) {
+    const d = document.createElement('div');
+    // Le sens du « mieux » dépend de l'indicateur : un CPA qui baisse est bon.
+    const good = dir === 0 ? 0 : (delta * dir > 0 ? 1 : -1);
+    d.className = 'lab-stat__delta lab-stat__delta--'
+      + (good > 0 ? 'up' : good < 0 ? 'down' : 'flat');
+    d.textContent = (delta >= 0 ? '+' : '−') + fmtPct(Math.abs(delta));
+    box.appendChild(d);
+  }
+  return box;
+}
+
+function renderLabArm(arm, ref, role) {
+  const wrap = document.createElement('div');
+  wrap.className = 'lab-arm' + (role === 'variant' ? ' lab-arm--variant' : '');
+
+  const r = document.createElement('div');
+  r.className = 'lab-arm__role';
+  r.textContent = role === 'variant' ? 'Variante' : 'Témoin';
+  wrap.appendChild(r);
+
+  const n = document.createElement('p');
+  n.className = 'lab-arm__name';
+  const names = arm.campaignNames && arm.campaignNames.length
+    ? arm.campaignNames.join(', ')
+    : (arm.name || '—');
+  n.textContent = names
+    + (arm.split ? ` · ${arm.split} % du trafic` : '');
+  wrap.appendChild(n);
+
+  const t = labArmTotals(arm);
+  const grid = document.createElement('div');
+  grid.className = 'lab-arm__grid';
+  for (const s of LAB_STATS) {
+    const v = t[s.key];
+    let delta = null;
+    if (ref && isFinite(ref[s.key]) && ref[s.key] !== 0 && isFinite(v)) {
+      delta = (v - ref[s.key]) / Math.abs(ref[s.key]);
+    }
+    grid.appendChild(labStatBlock(s.label, isFinite(v) ? s.fmt(v) : '—',
+      role === 'variant' ? delta : null, s.dir));
+  }
+  wrap.appendChild(grid);
+  return wrap;
+}
+
+function renderLabCard(x) {
+  const card = document.createElement('article');
+  card.className = 'lab-card';
+
+  const head = document.createElement('div');
+  head.className = 'lab-card__head';
+
+  const title = document.createElement('h3');
+  title.className = 'lab-card__title';
+  title.textContent = x.name;
+  head.appendChild(title);
+
+  const ph = LAB_PHASES[x.phase] || LAB_PHASES.inconnue;
+  const pill = document.createElement('span');
+  pill.className = `lab-pill lab-pill--${ph.pill}`;
+  const dot = document.createElement('span');
+  dot.className = 'lab-pill__dot';
+  pill.appendChild(dot);
+  pill.appendChild(document.createTextNode(ph.label));
+  head.appendChild(pill);
+
+  const meta = document.createElement('span');
+  meta.className = 'lab-card__meta';
+  const bits = [x.account, x.typeLabel];
+  if (x.id) bits.push(`#${x.id}`);
+  meta.textContent = bits.join('  ·  ');
+  head.appendChild(meta);
+  card.appendChild(head);
+
+  // Avancement : rempli sur la part écoulée de la fenêtre.
+  if (x.start) {
+    const today = S.lab.meta.today;
+    const total = x.end ? Math.max(1, labDays(x.start, x.end)) : null;
+    const done = Math.max(0, labDays(x.start, today));
+    const box = document.createElement('div');
+    box.className = 'lab-progress';
+    const track = document.createElement('div');
+    track.className = 'lab-progress__track';
+    const fill = document.createElement('div');
+    fill.className = 'lab-progress__fill';
+    fill.style.width = total ? `${Math.min(100, done / total * 100).toFixed(1)}%` : '100%';
+    track.appendChild(fill);
+    box.appendChild(track);
+    const lab = document.createElement('p');
+    lab.className = 'lab-progress__label';
+    // Le premier jour est le jour 1 : un test lancé ce matin n'est pas au jour 0.
+    const day = Math.min(total || Infinity, done + 1);
+    lab.textContent = x.end
+      ? `${fmtDateShort(x.start)} → ${fmtDateShort(x.end)}  ·  jour ${day} sur ${total}`
+        + `  ·  ${Math.max(0, total - done)} restant(s)`
+      : `${fmtDateShort(x.start)} → sans fin programmée  ·  jour ${day}`;
+    box.appendChild(lab);
+    card.appendChild(box);
+  }
+
+  const control = labControl(x);
+  const variant = labVariant(x);
+  const arms = document.createElement('div');
+  arms.className = 'lab-arms';
+  const cT = control ? labArmTotals(control) : null;
+
+  if (control) arms.appendChild(renderLabArm(control, null, 'control'));
+  const vs = document.createElement('div');
+  vs.className = 'lab-vs';
+  vs.textContent = 'vs';
+  arms.appendChild(vs);
+  if (variant) arms.appendChild(renderLabArm(variant, cT, 'variant'));
+  card.appendChild(arms);
+
+  card.appendChild(renderLabVerdict(x, control, variant));
+  return card;
+}
+
+/**
+ * Le verdict : ce que les chiffres autorisent à dire, et rien de plus.
+ *
+ * Trois cas seulement — pas encore de données, tendance non tranchée, écart
+ * significatif. Le nombre de clics manquants est donné dans le deuxième cas :
+ * « non significatif » sans ordre de grandeur laisse croire qu'il n'y a rien à
+ * attendre du test.
+ */
+function renderLabVerdict(x, control, variant) {
+  const p = document.createElement('p');
+  p.className = 'lab-verdict';
+
+  if (!control || !variant) {
+    p.textContent = 'Un seul bras est renseigné : le test ne peut pas être comparé. '
+      + 'C\'est le cas des brouillons dont la campagne variante n\'a pas été créée.';
+    return p;
+  }
+  const a = labArmTotals(control);
+  const b = labArmTotals(variant);
+  if (!a.clicks || !b.clicks) {
+    p.textContent = a.clicks || b.clicks
+      ? 'Un seul bras a reçu du trafic pour l\'instant — rien à comparer.'
+      : 'Aucun trafic sur les deux bras : le test n\'a pas encore démarré.';
+    return p;
+  }
+
+  const sig = labSignificance(a, b);
+  const better = b.cvr > a.cvr;
+  const gap = a.cvr ? (b.cvr - a.cvr) / a.cvr : NaN;
+
+  const strong = document.createElement('strong');
+  const span = document.createElement('span');
+
+  if (sig && sig.confidence >= LAB_CONF) {
+    strong.textContent = better
+      ? 'La variante gagne. ' : 'Le témoin gagne. ';
+    span.textContent = `Taux de conversion ${fmtPct(a.cvr)} → ${fmtPct(b.cvr)} `
+      + `(${gap >= 0 ? '+' : '−'}${fmtPct(Math.abs(gap))}), `
+      + `confiance ${fmtPct(sig.confidence)} sur ${fmtInt(a.clicks + b.clicks)} clics. `
+      + `Test de proportions sur le taux de conversion — les conversions Google étant `
+      + `fractionnaires et parfois multiples par clic, à lire comme un signal fort, pas `
+      + `comme une preuve.`;
+  } else if (sig) {
+    strong.textContent = 'Trop tôt pour trancher. ';
+    span.textContent = `Taux de conversion ${fmtPct(a.cvr)} contre ${fmtPct(b.cvr)} `
+      + `(${gap >= 0 ? '+' : '−'}${fmtPct(Math.abs(gap))}), confiance `
+      + `${fmtPct(sig.confidence)} — sous le seuil de ${fmtPct(LAB_CONF)}.`
+      + (sig.need ? ` Il manque environ ${fmtInt(sig.need)} clics par bras pour `
+        + `trancher un écart de cette taille.` : '');
+  } else {
+    strong.textContent = 'Écart non mesurable. ';
+    span.textContent = 'Les volumes ne permettent pas de calculer un indice de confiance.';
+  }
+
+  // Le partage de trafic déclaré n'est pas toujours celui qu'on observe. Sur un
+  // écart marqué, il faut le dire : deux bras de tailles très différentes ne
+  // vivent pas la même phase d'apprentissage, et l'écart de taux s'interprète
+  // autrement.
+  const declared = (variant.split || 50) / 100;
+  const observed = b.clicks / (a.clicks + b.clicks);
+  let imbalance = '';
+  if (a.clicks + b.clicks >= 200 && Math.abs(observed - declared) > 0.10) {
+    imbalance = ` Partage déclaré ${fmtPct(declared)} / ${fmtPct(1 - declared)}, `
+      + `mais la variante ne reçoit que ${fmtPct(observed)} des clics `
+      + `(${fmtInt(b.clicks)} contre ${fmtInt(a.clicks)}) : les deux bras ne sont pas `
+      + `comparables à volume égal, et le bras le plus petit apprend encore.`;
+  }
+
+  p.appendChild(strong);
+  if (sig) {
+    const g = document.createElement('span');
+    g.className = 'lab-verdict__gauge';
+    g.title = `Confiance ${fmtPct(sig.confidence)}`;
+    const i = document.createElement('i');
+    i.style.width = `${Math.min(100, sig.confidence * 100).toFixed(1)}%`;
+    if (sig.confidence >= LAB_CONF) i.style.background = cssVar('--series-6');
+    g.appendChild(i);
+    p.appendChild(g);
+  }
+  if (imbalance) span.textContent += imbalance;
+  p.appendChild(span);
+  return p;
+}
+
+function renderLabLive(rows) {
+  const live = rows.filter((x) => x.phase === 'en_cours')
+    .sort((a, b) => String(b.start).localeCompare(String(a.start)));
+  els.labLive.replaceChildren();
+
+  els.labLiveSub.textContent = live.length
+    ? `${live.length} test(s) actif(s) · témoin et variante mesurés sur la même fenêtre`
+    : 'Aucun test actif sur cette sélection';
+
+  if (!live.length) {
+    const card = document.createElement('div');
+    card.className = 'card card--wide';
+    emptyState(card, 'Aucune expérience en cours. Le registre ci-dessous liste '
+      + 'les tests passés, programmés et abandonnés.');
+    els.labLive.appendChild(card);
+    return;
+  }
+  for (const x of live) els.labLive.appendChild(renderLabCard(x));
+}
+
+/* ── Chronologie ───────────────────────────────────────────────────────────── */
+
+function renderLabTimeline(rows) {
+  const months = Number(S.labSpan) || 12;
+  const today = parseDate(S.lab.meta.today);
+  const from = new Date(today.getFullYear(), today.getMonth() - months + 1, 1);
+  const fromS = `${from.getFullYear()}-${String(from.getMonth() + 1).padStart(2, '0')}-01`;
+  const toS = S.lab.meta.today;
+
+  // Deux exclusions, pour que l'axe dise quelque chose de vrai :
+  //
+  // · sans date de début, un test n'a pas de place sur un axe temporel ;
+  // · sans date de fin réelle, un test abandonné serait dessiné comme s'il courait
+  //   depuis 2018 jusqu'à aujourd'hui. Ces barres pleine largeur écrasaient les
+  //   trois tests qui tournent vraiment. Seuls les tests en cours ont le droit
+  //   d'être ouverts à droite.
+  const datable = (x) => x.start && (x.end || x.phase === 'en_cours');
+  const items = rows.filter((x) => datable(x) && (x.end || toS) >= fromS && x.start <= toS)
+    .sort((a, b) => (LAB_PHASES[a.phase].rank - LAB_PHASES[b.phase].rank)
+      || String(b.start).localeCompare(String(a.start)));
+  const undated = rows.filter((x) => !datable(x)).length;
+
+  els.labTimelineSub.textContent =
+    `${items.length} test(s) chevauchant les ${months} derniers mois, les actifs d'abord`
+    + (undated ? ` · ${undated} sans fenêtre de dates exploitable, écarté(s) de l'axe `
+      + `et conservé(s) au registre` : '');
+
+  if (!items.length) {
+    emptyState(els.labTimelineBody, 'Aucune expérience datée sur cette fenêtre.');
+    return;
+  }
+
+  const span = Math.max(1, (parseDate(toS) - parseDate(fromS)) / 86400000);
+  const pos = (d) => Math.max(0, Math.min(100,
+    (parseDate(d) - parseDate(fromS)) / 86400000 / span * 100));
+
+  els.labTimelineBody.replaceChildren();
+  const box = document.createElement('div');
+  box.className = 'lab-gantt';
+
+  for (const x of items.slice(0, 40)) {
+    const row = document.createElement('div');
+    row.className = 'lab-gantt__row';
+    const lab = document.createElement('div');
+    lab.className = 'lab-gantt__label';
+    lab.textContent = x.name;
+    lab.title = `${x.name} — ${x.account}`;
+    row.appendChild(lab);
+
+    const track = document.createElement('div');
+    track.className = 'lab-gantt__track';
+    const bar = document.createElement('div');
+    bar.className = 'lab-gantt__bar';
+    const x1 = pos(x.start);
+    const x2 = pos(x.end && x.end < toS ? x.end : toS);
+    bar.style.left = `${x1}%`;
+    bar.style.width = `${Math.max(0.6, x2 - x1)}%`;
+    const ph = LAB_PHASES[x.phase] || LAB_PHASES.inconnue;
+    bar.style.background = ph.pill === 'live' ? cssVar('--series-6')
+      : ph.pill === 'done' ? cssVar('--series-7')
+        : ph.pill === 'stop' ? cssVar('--series-8')
+          : ph.pill === 'soon' ? cssVar('--series-1') : cssVar('--neutral-bar');
+    bar.title = `${x.name} · ${ph.label} · ${fmtDateShort(x.start)} → `
+      + `${x.end ? fmtDateShort(x.end) : 'sans fin'} · ${x.account}`;
+    track.appendChild(bar);
+    const now = document.createElement('div');
+    now.className = 'lab-gantt__today';
+    now.style.left = `${pos(toS)}%`;
+    track.appendChild(now);
+    row.appendChild(track);
+    box.appendChild(row);
+  }
+  els.labTimelineBody.appendChild(box);
+
+  const axis = document.createElement('div');
+  axis.className = 'lab-gantt__axis';
+  // Année incluse : sur une fenêtre de trois ans, « 1 sept. » ne situe rien.
+  for (const d of [fromS, toS]) {
+    const s = document.createElement('span');
+    s.textContent = fmtDateLong(d);
+    axis.appendChild(s);
+  }
+  els.labTimelineBody.appendChild(axis);
+
+  if (items.length > 40) {
+    els.labTimelineSub.textContent += ` · 40 lignes affichées sur ${items.length}`;
+  }
+}
+
+/* ── Registre complet ──────────────────────────────────────────────────────── */
+
+function renderLabRegistry(rows) {
+  const phase = S.labPhase || 'all';
+  const list = phase === 'all' ? rows : rows.filter((x) => x.phase === phase);
+
+  const counts = {};
+  for (const x of rows) counts[x.phase] = (counts[x.phase] || 0) + 1;
+
+  els.labAllSub.textContent =
+    `${list.length} expérience(s)${phase === 'all' ? '' : ` en phase « ${LAB_PHASES[phase].label} »`}`
+    + ` sur ${rows.length} au registre · ${new Set(rows.map((x) => x.account)).size} compte(s)`;
+
+  els.labAllNote.replaceChildren();
+  const dead = counts.abandonnee || 0;
+  if (dead) {
+    const strong = document.createElement('strong');
+    strong.textContent = `${dead} expérience(s) à nettoyer.`;
+    els.labAllNote.appendChild(strong);
+    const span = document.createElement('span');
+    span.textContent = ' Statut actif côté Google Ads, mais fenêtre de dates passée ou '
+      + 'jamais lancée — certaines datent de 2018 et portent une date de fin au 31/12/2037. '
+      + 'Elles n\'ont aucun effet sur la diffusion, mais elles rendent illisible la question '
+      + '« qu\'est-ce qui tourne en ce moment ».';
+    els.labAllNote.appendChild(span);
+    els.labAllNote.hidden = false;
+  } else {
+    els.labAllNote.hidden = true;
+  }
+
+  if (!list.length) {
+    emptyState(els.labAllBody, 'Aucune expérience dans cette phase.');
+    return;
+  }
+
+  renderTable(els.labAllBody, {
+    scroll: true,
+    caption: 'Registre des expériences',
+    cols: [
+      { key: 'name', label: 'Expérience', text: true },
+      { key: 'account', label: 'Compte', text: true },
+      { key: 'phase', label: 'Phase', text: true },
+      { key: 'type', label: 'Type', text: true },
+      { key: 'start', label: 'Début', text: true },
+      { key: 'end', label: 'Fin', text: true },
+      { key: 'arms', label: 'Bras', text: true },
+      { key: 'split', label: 'Split', text: true },
+    ],
+    rows: list
+      .slice()
+      .sort((a, b) => (LAB_PHASES[a.phase].rank - LAB_PHASES[b.phase].rank)
+        || String(b.start || '').localeCompare(String(a.start || '')))
+      .slice(0, 300)
+      .map((x) => {
+        const c = labControl(x);
+        const v = labVariant(x);
+        // La description reprend souvent le nom mot pour mot : l'afficher deux
+        // fois n'ajoute rien et fait croire à deux informations.
+        const sub = [x.description, x.suffix]
+          .find((s) => s && s.trim() && s.trim() !== x.name.trim()) || '';
+        return {
+          name: x.name,
+          _sub: sub,
+          _swatch: seriesColor(x.phase === 'en_cours' ? 6
+            : x.phase === 'promue' ? 7 : x.phase === 'arretee' ? 8 : 4),
+          account: x.account,
+          phase: LAB_PHASES[x.phase].label,
+          type: x.typeLabel,
+          start: x.start ? fmtDateShort(x.start) : 'non définie',
+          end: x.end ? fmtDateShort(x.end) : (x.endOpen ? 'sans fin' : '—'),
+          arms: `${c ? 1 : 0} témoin / ${v ? 1 : 0} variante`,
+          split: (c && c.split) || (v && v.split) ? `${(v && v.split) || (c && c.split)} %` : '—',
+        };
+      }),
+  });
+}
+
+/* ── Orchestration ────────────────────────────────────────────────────────── */
+
+function renderLab() {
+  if (S.labState !== 'ready') return;
+  const rows = labRows();
+  const meta = S.lab.meta || {};
+
+  els.labMeta.textContent =
+    `${meta.experiments} expérience(s) relevées sur ${meta.accounts_scanned} comptes · `
+    + `métriques des bras sur ${meta.window_days} jours au plus · `
+    + `relevé du ${fmtDateLong(meta.today)}`
+    + (S.accounts.size ? ` · filtré sur ${S.accounts.size} compte(s)` : '');
+
+  if (S.view === 'lab') {
+    els.filterStatus.textContent =
+      `${rows.length} expérience(s) · ${rows.filter((x) => x.phase === 'en_cours').length} en cours`;
+  }
+
+  renderLabKpis(rows);
+  renderLabLive(rows);
+  renderLabTimeline(rows);
+  renderLabRegistry(rows);
+}
+
+async function loadLab() {
+  if (S.labState !== 'idle') return;
+  S.labState = 'loading';
+  try {
+    const res = await fetch('data/experiments.json', { cache: 'no-cache' });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    S.lab = await res.json();
+  } catch (err) {
+    S.labState = 'error';
+    els.labError.replaceChildren();
+    const s = document.createElement('strong');
+    s.textContent = 'Expériences indisponibles.';
+    els.labError.appendChild(s);
+    const d = document.createElement('span');
+    d.textContent = `Impossible de charger data/experiments.json (${err.message}). `
+      + `Générez-le avec « python scripts/fetch_experiments.py ».`;
+    els.labError.appendChild(d);
+    els.labError.hidden = false;
+    return;
+  }
+  if (!S.lab || !Array.isArray(S.lab.experiments) || !S.lab.experiments.length) {
+    S.labState = 'error';
+    els.labError.replaceChildren();
+    const s = document.createElement('strong');
+    s.textContent = 'Aucune expérience enregistrée sur ce MCC.';
+    els.labError.appendChild(s);
+    els.labError.hidden = false;
+    return;
+  }
+  S.labState = 'ready';
+  els.labError.hidden = true;
+
+  buildSegmented(els.labSpan,
+    [{ key: '6', label: '6 mois' }, { key: '12', label: '12 mois' },
+     { key: '36', label: '3 ans' }, { key: '120', label: 'Tout' }],
+    () => String(S.labSpan), (k) => { S.labSpan = k; renderLab(); writeHash(); });
+
+  // Les phases proposées sont celles qui existent : un filtre vide n'a pas d'objet.
+  const present = new Set(S.lab.experiments.map((x) => x.phase));
+  buildSegmented(els.labPhase,
+    [{ key: 'all', label: 'Toutes' },
+     ...Object.entries(LAB_PHASES)
+       .filter(([k]) => present.has(k))
+       .sort((a, b) => a[1].rank - b[1].rank)
+       .map(([k, v]) => ({ key: k, label: v.label[0].toUpperCase() + v.label.slice(1) }))],
+    () => S.labPhase, (k) => { S.labPhase = k; renderLab(); writeHash(); });
+
+  renderLab();
+}
+
 
 /* ── Navigation entre vues ────────────────────────────────────────────────── */
 
@@ -7785,6 +8464,7 @@ function setView(view) {
   els.contenu.hidden = view !== 'report';
   els.viewLive.hidden = view !== 'live';
   els.viewTracking.hidden = view !== 'tracking';
+  els.viewLab.hidden = view !== 'lab';
   // La barre reste visible sur les trois vues : le filtre de comptes vaut
   // partout. Les contrôles sans objet ailleurs sont masqués — appareil, réseau
   // et recherche de campagne ne cadrent que le rapport ; la période cadre aussi
@@ -7793,8 +8473,11 @@ function setView(view) {
   for (const n of document.querySelectorAll('[data-report-only]')) {
     n.hidden = view !== 'report';
   }
-  for (const n of document.querySelectorAll('[data-no-live]')) {
-    n.hidden = view === 'live';
+  // La période cadre le rapport et le Tracking. Le Live porte sur la journée en
+  // cours, et les expériences ont chacune leur propre fenêtre de dates : dans
+  // les deux cas, un sélecteur de période n'aurait aucun effet.
+  for (const n of document.querySelectorAll('[data-period]')) {
+    n.hidden = view === 'live' || view === 'lab';
   }
   els.filterAction.hidden = view !== 'live';
   for (const b of els.viewTabs.querySelectorAll('button')) {
@@ -7805,6 +8488,7 @@ function setView(view) {
   writeHash();
   if (view === 'live' && S.liveState === 'idle') loadLive();
   if (view === 'tracking' && S.trackingState === 'idle') loadTracking();
+  if (view === 'lab' && S.labState === 'idle') loadLab();
   // Les SVG sont dimensionnés sur une largeur mesurée : un conteneur masqué
   // mesure zéro, il faut redessiner en revenant sur la vue.
   if (view === 'report') render();
@@ -7813,6 +8497,11 @@ function setView(view) {
     els.filterStatus.textContent = S.trackingState === 'ready'
       ? `${fmtDateLong(S.start)} – ${fmtDateLong(S.end)} · santé de la mesure`
       : 'Signaux de tracking en cours de chargement…';
+  } else if (view === 'lab') {
+    // Les expériences ont leurs propres fenêtres de dates : le filtre de période
+    // n'a pas d'objet ici, seul celui de comptes s'applique.
+    if (S.labState === 'ready') renderLab();
+    else els.filterStatus.textContent = 'Registre des expériences en cours de chargement…';
   } else if (S.liveState === 'ready') renderLive();
   else els.filterStatus.textContent = 'Direct en cours de chargement…';
 
@@ -7924,6 +8613,12 @@ function cacheEls() {
     contenu: 'contenu', viewLive: 'view-live', viewTabs: 'view-tabs',
     genderSection: 'gender-section', genderSub: 'gender-sub',
     genderNote: 'gender-note', genderScale: 'gender-scale', genderBody: 'gender-body',
+    viewLab: 'view-lab', labError: 'lab-error', labMeta: 'lab-meta', labKpi: 'lab-kpi',
+    labLive: 'lab-live', labLiveSub: 'lab-live-sub',
+    labSpan: 'lab-span', labTimelineSub: 'lab-timeline-sub',
+    labTimelineBody: 'lab-timeline-body',
+    labPhase: 'lab-phase', labAllSub: 'lab-all-sub', labAllNote: 'lab-all-note',
+    labAllBody: 'lab-all-body',
     viewTracking: 'view-tracking', trkError: 'trk-error', trkLimits: 'trk-limits',
     trkMeta: 'trk-meta', trkKpi: 'trk-kpi',
     trkDiagDim: 'trk-diag-dim', trkDiagSub: 'trk-diag-sub',
@@ -7978,7 +8673,7 @@ function showFatal(message) {
 function wireControls() {
   buildSegmented(els.viewTabs,
     [{ key: 'report', label: 'Rapport' }, { key: 'live', label: 'Live' },
-     { key: 'tracking', label: 'Tracking' }],
+     { key: 'tracking', label: 'Tracking' }, { key: 'lab', label: 'Expériences' }],
     () => S.view, setView);
 
   // La période cadre le rapport et le Tracking : le redessin doit suivre la vue

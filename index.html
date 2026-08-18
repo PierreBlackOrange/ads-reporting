@@ -47,7 +47,7 @@
 
     <!-- La période vaut sur le rapport ET sur le Tracking ; seul le Live n'en a
          pas l'usage, puisqu'il porte sur la journée en cours. -->
-    <div class="filter" data-no-live>
+    <div class="filter" data-period>
       <span class="filter__label" id="lbl-range">Période</span>
       <div class="segmented" role="group" aria-labelledby="lbl-range" id="range-presets"></div>
       <details class="dropdown dropdown--tight" id="range-custom-wrap">
@@ -370,6 +370,62 @@
         </div>
       </div>
       <div class="card__body" id="trk-config-body"></div>
+    </article>
+  </section>
+</main>
+
+
+<!-- ── Onglet Expériences ─────────────────────────────────────────────────── -->
+<main id="view-lab" hidden>
+  <div class="banner banner--error" id="lab-error" hidden></div>
+
+  <section class="section" aria-labelledby="h-lab-kpi">
+    <div class="section__head">
+      <h2 id="h-lab-kpi">Paillasse</h2>
+      <p class="section__sub" id="lab-meta"></p>
+    </div>
+    <div class="kpi-grid" id="lab-kpi"></div>
+  </section>
+
+  <!-- Les tests qui tournent : une fiche par expérience, témoin face à variante. -->
+  <section class="section" aria-labelledby="h-lab-live">
+    <div class="section__head">
+      <h2 id="h-lab-live">Expériences en cours</h2>
+      <p class="section__sub" id="lab-live-sub"></p>
+    </div>
+    <div id="lab-live"></div>
+  </section>
+
+  <section class="section" aria-labelledby="h-lab-timeline">
+    <article class="card card--wide">
+      <div class="card__head">
+        <div>
+          <h2 class="card__title" id="h-lab-timeline">Chronologie des tests</h2>
+          <p class="card__sub" id="lab-timeline-sub"></p>
+        </div>
+        <div class="card__tools">
+          <div class="segmented segmented--sm" role="group" aria-label="Profondeur"
+               id="lab-span"></div>
+        </div>
+      </div>
+      <div class="card__body" id="lab-timeline-body"></div>
+    </article>
+  </section>
+
+  <section class="section" aria-labelledby="h-lab-all">
+    <article class="card card--wide">
+      <div class="card__head">
+        <div>
+          <h2 class="card__title" id="h-lab-all">Registre des expériences</h2>
+          <p class="card__sub" id="lab-all-sub"></p>
+        </div>
+        <div class="card__tools">
+          <div class="segmented segmented--sm" role="group" aria-label="Phase"
+               id="lab-phase"></div>
+        </div>
+      </div>
+      <div class="banner banner--warn banner--inline" id="lab-all-note" hidden></div>
+      <div class="card__body" id="lab-all-body"></div>
     </article>
   </section>
 </main>

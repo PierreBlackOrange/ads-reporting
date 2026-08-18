@@ -297,6 +297,90 @@ vous visez un document court.
 
 ---
 
+## Onglet Expériences
+
+`#vue=lab`, alimenté par `data/experiments.json`
+(`python scripts/fetch_experiments.py`). Chargé à l'ouverture de l'onglet.
+
+Les A/B tests Google Ads : chaque expérience a deux bras — un témoin, une
+variante — chacun rattaché à une campagne avec sa part de trafic. Les deux côtés
+sont donc mesurés sur les mêmes métriques et la même fenêtre, ce qu'un test doit
+précisément permettre.
+
+### « ENABLED » ne veut pas dire « en cours »
+
+Sur ce MCC : **385 expériences enregistrées, 3 qui tournent réellement.** Les
+autres se répartissent en 228 supprimées, 48 promues, 43 arrêtées, 56 abandonnées
+et 7 brouillons.
+
+Le statut seul induit en erreur. 43 expériences portent le statut `ENABLED` et
+certaines se terminaient en 2022 ; quinze sont `INITIATED` depuis 2018-2019 avec
+une date de fin au 31/12/2037. La phase affichée croise donc **le statut et les
+dates** :
+
+| Phase | Règle |
+|---|---|
+| **en cours** | `ENABLED` et la fenêtre couvre aujourd'hui |
+| **programmée** | début dans le futur, ou `INITIATED` non encore lancée |
+| **brouillon** | `SETUP` — jamais lancée, la date de début n'a pas de sens |
+| **promue** | `PROMOTED` ou `GRADUATED` — variante adoptée |
+| **arrêtée** | `HALTED` |
+| **abandonnée** | statut actif mais fenêtre passée, ou `INITIATED` depuis des années |
+
+Deux dates sentinelles sont traduites plutôt qu'affichées : `1970-01-01` devient
+« non définie », `2037-12-31` devient « sans fin ». Les afficher telles quelles
+donnait des tests lancés en 1970 et courant jusqu'en 2037.
+
+### Ce que le verdict dit, et ce qu'il ne dit pas
+
+Chaque fiche compare témoin et variante sur coût, clics, conversions, taux de
+conversion, CPA et ROAS, puis conclut en trois cas seulement : **pas encore de
+données**, **trop tôt pour trancher**, **écart significatif**.
+
+L'indice de confiance est un **test de proportions sur le taux de conversion**
+(z bilatéral, loi normale via une approximation d'erf écrite à la main — aucune
+bibliothèque externe n'est chargeable dans cette page). Trois réserves, toutes
+affichées dans l'interface :
+
+- il porte sur le **taux de conversion**, pas sur le ROAS ;
+- un test de proportions suppose des issues binaires par clic, or les conversions
+  de Google sont **fractionnaires** et parfois multiples par clic : à lire comme
+  un signal, pas comme une preuve ;
+- deux campagnes distinctes à 50/50 ne sont pas deux populations parfaitement
+  isolées — saisonnalité, apprentissage de l'algorithme et cannibalisation entre
+  bras existent.
+
+Quand l'écart n'est pas concluant, la carte donne **le nombre de clics manquants
+par bras** pour trancher à 95 % avec 80 % de puissance. « Non significatif » sans
+ordre de grandeur laisse croire qu'il n'y a rien à attendre du test.
+
+Elle signale aussi les **partages de trafic qui ne tiennent pas** : sur *AB test
+LP*, le partage déclaré est 50/50 mais la variante ne reçoit que 25 % des clics
+(456 contre 1 335). Deux bras de tailles très différentes ne vivent pas la même
+phase d'apprentissage.
+
+### Chronologie
+
+Un test n'apparaît sur l'axe que s'il a une date de début **et** une fin réelle —
+sauf s'il est en cours, seul cas où l'ouverture à droite est légitime. Sans cette
+règle, les tests abandonnés étaient dessinés comme s'ils couraient depuis 2018,
+en barres pleine largeur qui écrasaient les trois tests actifs. Les tests écartés
+sont comptés dans le sous-titre et restent au registre.
+
+### Le look
+
+Trame millimétrée en fond de fiche, métadonnées en chasse fixe, témoin et
+variante face à face séparés par un « vs », pastille de phase dont le point ne
+clignote que pour « en cours » — le seul état qui change tout seul, et le
+clignotement est désactivé sous `prefers-reduced-motion`.
+
+Les **teintes restent celles du dashboard**. L'ambiance passe par la trame, la
+typographie et la mise en regard, pas par une seconde palette : deux jeux de
+couleurs rendraient les graphiques de cet onglet incomparables avec le reste du
+rapport.
+
+---
+
 ## Onglet Tracking / Consent Mode
 
 `#vue=tracking`, alimenté par `data/tracking.json`

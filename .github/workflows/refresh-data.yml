@@ -105,6 +105,19 @@ jobs:
           GOOGLE_ADS_LOGIN_CUSTOMER_ID: ${{ secrets.GOOGLE_ADS_LOGIN_CUSTOMER_ID }}
         run: python scripts/fetch_tracking.py --days "${{ github.event.inputs.days || '180' }}"
 
+      # A/B tests. Les métriques des bras ne sont collectées que sur la fenêtre
+      # des tests eux-mêmes, donc le volume reste faible.
+      - name: Récupérer les expériences
+        if: steps.check.outputs.ready == 'true'
+        continue-on-error: true
+        env:
+          GOOGLE_ADS_DEVELOPER_TOKEN:   ${{ secrets.GOOGLE_ADS_DEVELOPER_TOKEN }}
+          GOOGLE_ADS_CLIENT_ID:         ${{ secrets.GOOGLE_ADS_CLIENT_ID }}
+          GOOGLE_ADS_CLIENT_SECRET:     ${{ secrets.GOOGLE_ADS_CLIENT_SECRET }}
+          GOOGLE_ADS_REFRESH_TOKEN:     ${{ secrets.GOOGLE_ADS_REFRESH_TOKEN }}
+          GOOGLE_ADS_LOGIN_CUSTOMER_ID: ${{ secrets.GOOGLE_ADS_LOGIN_CUSTOMER_ID }}
+        run: python scripts/fetch_experiments.py
+
       # Historique des modifications Google Ads. Le rafraîchissement quotidien
       # n'est pas un confort : l'API ne conserve que 28 jours, donc ce qui n'est
       # pas collecté aujourd'hui est perdu pour de bon.
@@ -149,7 +162,7 @@ jobs:
           FILES=""
           for f in data/data.json data/aimax.json data/gender.json \
                    data/tracking.json data/changelog.json data/changes.json \
-                   data/releases.json; do
+                   data/releases.json data/experiments.json; do
             [ -f "$f" ] && FILES="$FILES $f"
           done
           if [ -z "$FILES" ]; then
