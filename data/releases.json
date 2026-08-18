@@ -1,15 +1,33 @@
 {
  "meta": {
-  "generated_at": "2026-08-17T14:41:05+02:00",
+  "generated_at": "2026-08-18T09:46:08+02:00",
   "commits_scanned": "tous",
-  "entries": 31,
-  "data_only_skipped": 61,
+  "entries": 33,
+  "data_only_skipped": 64,
   "first": "2026-08-11",
-  "last": "2026-08-17"
+  "last": "2026-08-18"
  },
  "entries": [
   {
-   "sha": "0eacd7d",
+   "sha": "309b66c",
+   "date": "2026-08-18",
+   "title": "Onglet Experiences : les A/B tests, en registre de laboratoire",
+   "kind": "feat",
+   "kindLabel": "Évolution",
+   "detail": "385 experiences relevees sur le MCC, 3 qui tournent reellement.",
+   "files": 7
+  },
+  {
+   "sha": "4190681",
+   "date": "2026-08-17",
+   "title": "Tracking : ajoute phoenix_franco, es_top5decitas et be_sexy_top-site-de-rencontre",
+   "kind": "feat",
+   "kindLabel": "Évolution",
+   "detail": "Onze comptes surveilles au lieu de huit.",
+   "files": 1
+  },
+  {
+   "sha": "f1de133",
    "date": "2026-08-17",
    "title": "Tracking : perimetre limite aux MCC Easyflirt et Comparateur",
    "kind": "feat",
