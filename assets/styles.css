@@ -1011,6 +1011,119 @@ table.data tfoot td {
   color: var(--text-secondary);
 }
 
+/* ── Comparateur : pages aux extrémités, chiffres en regard ────────────────── */
+
+.lab-cmp {
+  display: grid;
+  /* capture · valeurs témoin · libellé · valeurs variante · capture */
+  grid-template-columns: auto minmax(0, 1fr) auto minmax(0, 1fr) auto;
+  gap: 0 16px;
+  padding: 14px 18px 18px;
+  align-items: center;
+}
+
+.lab-cmp__head {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding-bottom: 10px;
+  align-self: end;
+}
+.lab-cmp__head--v { text-align: right; }
+.lab-cmp__head--mid {
+  align-self: end;
+  text-align: center;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+.lab-cmp__role {
+  font-size: 11px; font-weight: 700; text-transform: uppercase;
+  letter-spacing: 0.5px; color: var(--text-muted);
+}
+.lab-cmp__lp { font-size: 12.5px; color: var(--text-primary); font-weight: 600; }
+.lab-cmp__camp { font-size: 11.5px; color: var(--text-secondary); overflow-wrap: anywhere; }
+
+/* La cellule tient le filet de séparation sur toute la largeur de la colonne. */
+.lab-cmp__val {
+  display: flex;
+  padding: 5px 0;
+  border-top: 1px solid var(--border);
+}
+.lab-cmp__val--c { justify-content: flex-end; }
+.lab-cmp__val--v { justify-content: flex-start; }
+
+/* La pastille épouse le contenu : c'est elle qui porte le surlignage, et elle se
+   tient près du libellé pour que les deux chiffres se comparent d'un coup d'œil. */
+.lab-cmp__pill {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 4px 9px;
+  border-radius: 7px;
+}
+.lab-cmp__val--v .lab-cmp__pill { flex-direction: row-reverse; }
+.lab-cmp__num { font-size: 17px; font-weight: 650; font-variant-numeric: tabular-nums; }
+
+/* Le gagnant de la ligne : fond teinté et chiffre appuyé. Le seuil de 5 % est
+   appliqué côté JS — surligner un écart de 1 % ferait passer du bruit pour un
+   résultat. */
+.lab-cmp__pill.is-win {
+  background: color-mix(in srgb, var(--series-6) 14%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--series-6) 30%, transparent);
+}
+.lab-cmp__pill.is-win .lab-cmp__num { color: var(--series-6); font-weight: 750; }
+
+.lab-cmp__delta { font-size: 11.5px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.lab-cmp__delta--up { color: var(--series-6); }
+.lab-cmp__delta--down { color: var(--series-8); }
+.lab-cmp__delta--flat { color: var(--text-muted); }
+
+.lab-cmp__lab {
+  text-align: center;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  color: var(--text-muted);
+  white-space: nowrap;
+  padding: 6px 0;
+  border-top: 1px solid var(--border);
+}
+
+/* Sous 1000 px, la grille à cinq colonnes ne tient plus : tout passe en une
+   colonne. Les placements étant posés en style inline par le rendu — seul moyen
+   d'aligner les lignes au pixel — leur neutralisation demande « !important ». */
+@media (max-width: 1000px) {
+  .lab-cmp { grid-template-columns: 1fr; gap: 0; }
+  .lab-cmp > * {
+    grid-column: 1 !important;
+    grid-row: auto !important;
+  }
+  .lab-cmp__head--v { text-align: left; align-items: flex-start; }
+  .lab-cmp__val--c, .lab-cmp__val--v { justify-content: flex-start; }
+  .lab-cmp__val--v .lab-cmp__pill { flex-direction: row; }
+  .lab-cmp__head--mid { display: none; }
+  .lab-cmp__lab {
+    text-align: left;
+    border-top-width: 2px;
+    margin-top: 6px;
+    padding-top: 8px;
+  }
+  /* Une colonne : plus rien ne dit de quel bras vient une valeur. Le libellé du
+     côté est donc écrit, uniquement dans cette disposition. */
+  .lab-cmp__val { border-top: 0; padding: 2px 0; }
+  .lab-cmp__val::before {
+    flex: 0 0 4.5rem;
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+    color: var(--text-muted);
+    align-self: center;
+  }
+  .lab-cmp__val--c::before { content: "témoin"; }
+  .lab-cmp__val--v::before { content: "variante"; }
+}
+
 /* ── Capture de la page de destination ─────────────────────────────────────── */
 
 .lab-shot { margin: 10px 0 12px; }

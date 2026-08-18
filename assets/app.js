@@ -8104,6 +8104,132 @@ function renderLabArm(arm, ref, role, experiment) {
   return wrap;
 }
 
+/* Écart relatif minimal pour désigner un gagnant sur une ligne. En dessous, les
+   deux valeurs sont traitées à égalité : surligner un écart de 1 % ferait passer
+   du bruit pour un résultat. */
+const LAB_WIN_MIN = 0.05;
+
+/**
+ * Comparateur : les deux pages aux extrémités, les chiffres en regard au centre.
+ *
+ * Une seule grille pour tout, avec placement explicite de chaque cellule : c'est
+ * ce qui garantit que la ligne « CPA » du témoin et celle de la variante soient
+ * exactement à la même hauteur. Deux blocs indépendants côte à côte se
+ * désalignaient dès qu'une valeur passait sur deux lignes.
+ *
+ * Le gagnant de chaque ligne est surligné, quand la métrique a un sens de
+ * lecture : un CPA plus bas est meilleur, un coût plus élevé n'est ni bon ni
+ * mauvais — il n'y a donc pas de gagnant sur le coût ni sur les clics.
+ */
+function renderLabCompare(x, control, variant) {
+  const box = document.createElement('div');
+  box.className = 'lab-cmp';
+
+  const a = labArmTotals(control);
+  const b = labArmTotals(variant);
+  const shotC = labShot(x, 'control');
+  const shotV = labShot(x, 'variant');
+
+  const place = (el, col, row, span) => {
+    el.style.gridColumn = span ? `${col} / span ${span}` : String(col);
+    if (row) el.style.gridRow = span && row === 1 ? String(row) : String(row);
+    return el;
+  };
+
+  const head = (arm, shot, role) => {
+    const h = document.createElement('div');
+    h.className = `lab-cmp__head lab-cmp__head--${role === 'control' ? 'c' : 'v'}`;
+    const r = document.createElement('span');
+    r.className = 'lab-cmp__role';
+    r.textContent = role === 'control' ? 'Témoin' : 'Variante';
+    h.appendChild(r);
+    if (shot && shot.label) {
+      const l = document.createElement('span');
+      l.className = 'lab-cmp__lp';
+      l.textContent = shot.label;
+      h.appendChild(l);
+    }
+    const c = document.createElement('span');
+    c.className = 'lab-cmp__camp';
+    c.textContent = (arm.campaignNames && arm.campaignNames.length
+      ? arm.campaignNames.join(', ') : arm.name || '—')
+      + (arm.split ? ` · ${arm.split} %` : '');
+    h.appendChild(c);
+    return h;
+  };
+
+  // L'ordre du DOM est celui de la lecture en UNE colonne — en-tête puis capture
+  // de chaque bras, ensuite les lignes de chiffres. Sur écran large, chaque
+  // cellule est placée explicitement dans la grille, donc cet ordre n'a aucun
+  // effet : c'est ce qui permet d'optimiser le DOM pour l'affichage étroit sans
+  // rien casser ailleurs.
+  const rows = LAB_STATS.length;
+  box.appendChild(place(head(control, shotC, 'control'), 1, 1, 2));
+  if (shotC) box.appendChild(place(renderLabShot(shotC), 1, `2 / span ${rows}`));
+  box.appendChild(place(head(variant, shotV, 'variant'), 4, 1, 2));
+  if (shotV) box.appendChild(place(renderLabShot(shotV), 5, `2 / span ${rows}`));
+
+  const mid = document.createElement('div');
+  mid.className = 'lab-cmp__head lab-cmp__head--mid';
+  mid.textContent = 'vs';
+  box.appendChild(place(mid, 3, 1));
+
+  LAB_STATS.forEach((s, i) => {
+    const row = 2 + i;
+    const va = a[s.key];
+    const vb = b[s.key];
+    const both = isFinite(va) && isFinite(vb);
+    let delta = null;
+    if (both && va !== 0) delta = (vb - va) / Math.abs(va);
+
+    // Gagnant : seulement si la métrique a un sens, que les deux valeurs
+    // existent, et que l'écart dépasse le seuil.
+    let win = 0;
+    if (s.dir !== 0 && both && Math.abs(delta ?? 0) >= LAB_WIN_MIN) {
+      win = (vb - va) * s.dir > 0 ? 1 : -1;
+    }
+
+    // La cellule porte le filet de séparation sur toute la largeur ; le
+    // surlignage, lui, vit dans une pastille qui épouse le contenu. Sans cette
+    // séparation, le fond vert s'étalait sur toute la colonne et les chiffres
+    // flottaient loin de leur libellé.
+    const cell = (v, side) => {
+      const d = document.createElement('div');
+      d.className = `lab-cmp__val lab-cmp__val--${side}`;
+      const pill = document.createElement('span');
+      pill.className = 'lab-cmp__pill';
+      if ((side === 'c' && win === -1) || (side === 'v' && win === 1)) {
+        pill.classList.add('is-win');
+        pill.title = 'Meilleur des deux bras sur cette ligne';
+      }
+      const n = document.createElement('span');
+      n.className = 'lab-cmp__num';
+      n.textContent = isFinite(v) ? s.fmt(v) : '—';
+      pill.appendChild(n);
+      if (side === 'v' && delta !== null && isFinite(delta)) {
+        const g = document.createElement('span');
+        const good = s.dir === 0 ? 0 : (delta * s.dir > 0 ? 1 : -1);
+        g.className = 'lab-cmp__delta lab-cmp__delta--'
+          + (good > 0 ? 'up' : good < 0 ? 'down' : 'flat');
+        g.textContent = (delta >= 0 ? '+' : '−') + fmtPct(Math.abs(delta));
+        pill.appendChild(g);
+      }
+      d.appendChild(pill);
+      return d;
+    };
+
+    const lab = document.createElement('div');
+    lab.className = 'lab-cmp__lab';
+    lab.textContent = s.label;
+    box.appendChild(place(lab, 3, row));
+
+    box.appendChild(place(cell(va, 'c'), 2, row));
+    box.appendChild(place(cell(vb, 'v'), 4, row));
+  });
+
+  return box;
+}
+
 function renderLabCard(x) {
   const card = document.createElement('article');
   card.className = 'lab-card';
@@ -8161,17 +8287,17 @@ function renderLabCard(x) {
 
   const control = labControl(x);
   const variant = labVariant(x);
-  const arms = document.createElement('div');
-  arms.className = 'lab-arms';
-  const cT = control ? labArmTotals(control) : null;
 
-  if (control) arms.appendChild(renderLabArm(control, null, 'control', x));
-  const vs = document.createElement('div');
-  vs.className = 'lab-vs';
-  vs.textContent = 'vs';
-  arms.appendChild(vs);
-  if (variant) arms.appendChild(renderLabArm(variant, cT, 'variant', x));
-  card.appendChild(arms);
+  if (control && variant) {
+    card.appendChild(renderLabCompare(x, control, variant));
+  } else {
+    // Un seul bras renseigné : rien à comparer, on retombe sur un panneau simple.
+    const arms = document.createElement('div');
+    arms.className = 'lab-arms';
+    const only = control || variant;
+    if (only) arms.appendChild(renderLabArm(only, null, control ? 'control' : 'variant', x));
+    card.appendChild(arms);
+  }
 
   card.appendChild(renderLabVerdict(x, control, variant));
   return card;
