@@ -367,6 +367,50 @@ règle, les tests abandonnés étaient dessinés comme s'ils couraient depuis 20
 en barres pleine largeur qui écrasaient les trois tests actifs. Les tests écartés
 sont comptés dans le sous-titre et restent au registre.
 
+### Les captures de pages de destination
+
+Sur un test de landing page, l'écart se voit mieux qu'il ne se décrit. Chaque bras
+peut donc afficher **la capture de sa page**, cliquable vers l'URL réelle, avec la
+date de capture.
+
+```bash
+python scripts/capture_lp.py            # capture tout le manifeste
+python scripts/capture_lp.py --only c27 # une seule entrée
+```
+
+L'appariement bras → URL vit dans `data/landing-pages.json`, **renseigné à la
+main** : l'API Google Ads ne donne pas l'URL finale d'un bras d'expérience, et
+deux campagnes d'un même test peuvent pointer vers des pages différentes sans que
+rien dans les données ne le dise. Deviner d'après un nom de campagne serait une
+invention. Une entrée par bras, avec `experiment`, `arm` (`control` ou `variant`),
+`url` et `image`.
+
+**Pourquoi capturer plutôt que pointer vers le site.** Une balise `<img>` vers
+l'URL live afficherait la page telle qu'elle est *aujourd'hui*. Or l'intérêt d'un
+A/B test est de comparer deux pages **à un moment donné** : si la variante est
+modifiée pendant le test, ou promue à la fin, le dashboard montrerait
+rétroactivement la mauvaise image. Les captures sont donc versionnées, datées, et
+ne changent que sur commande.
+
+Détails de mise en œuvre :
+
+- **624 px de large**, parce que la page a une largeur minimale supérieure à
+  390 px : plus étroit, le bouton « Se connecter » et le CTA sortent du cadre. Le
+  premier essai à 390 px les coupait.
+- réduites à 75 % et encodées en JPEG progressif : **une cinquantaine de Ko par
+  capture** ;
+- affichées **en page entière**, sans recadrage. L'écart peut se situer n'importe
+  où — visuel, titre, position du bouton — et recadrer le haut reviendrait à
+  décider d'avance ce qui compte ;
+- `loading="lazy"` : trois fiches ouvertes feraient six captures, dont on ne
+  regarde qu'une paire à la fois.
+
+⚠️ Ce dépôt est public : les captures y sont donc publiques. Ce sont vos propres
+pages de destination, déjà accessibles en ligne, mais le rappel a sa place ici.
+
+Sans manifeste, les fiches s'affichent simplement sans capture — c'est le cas de
+la plupart des tests.
+
 ### Le look
 
 Trame millimétrée en fond de fiche, métadonnées en chasse fixe, témoin et

@@ -1004,6 +1004,56 @@ table.data tfoot td {
 .lab-arm__role {
   font-size: 11px; font-weight: 700; text-transform: uppercase;
   letter-spacing: 0.5px; color: var(--text-muted);
+  display: flex; flex-wrap: wrap; gap: 8px; align-items: baseline;
+}
+.lab-arm__lp {
+  font-weight: 500; text-transform: none; letter-spacing: 0;
+  color: var(--text-secondary);
+}
+
+/* ── Capture de la page de destination ─────────────────────────────────────── */
+
+.lab-shot { margin: 10px 0 12px; }
+.lab-shot a { display: block; }
+/* Cadre net et coins doux : la capture doit se lire comme un échantillon posé
+   sur la paillasse, pas comme une illustration de fond. */
+.lab-shot img {
+  display: block;
+  width: 100%;
+  max-width: 220px;
+  /* Page entière, pas de recadrage : sur un test de page de destination, l'écart
+     peut se situer n'importe où — le visuel, le titre, la position du bouton.
+     Recadrer le haut reviendrait à décider d'avance ce qui compte. */
+  height: auto;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--wash);
+  transition: transform 140ms ease, box-shadow 140ms ease;
+}
+.lab-shot a:hover img,
+.lab-shot a:focus-visible img {
+  transform: scale(1.02);
+  box-shadow: 0 4px 16px rgb(0 0 0 / 18%);
+}
+.lab-shot figcaption {
+  margin-top: 5px;
+  font-size: 10.5px;
+  color: var(--text-muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  max-width: 220px;
+  overflow-wrap: anywhere;
+}
+.lab-shot figcaption a { color: var(--text-secondary); }
+
+@media (prefers-reduced-motion: reduce) {
+  .lab-shot img { transition: none; }
+  .lab-shot a:hover img, .lab-shot a:focus-visible img { transform: none; }
+}
+
+/* À l'impression, la capture reste : c'est souvent l'information la plus
+   parlante d'un test de page. */
+@media print {
+  .lab-shot img { max-width: 130px; box-shadow: none; }
 }
 .lab-arm__name {
   margin: 3px 0 10px; font-size: 13px; color: var(--text-primary);

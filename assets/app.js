@@ -198,6 +198,7 @@ const S = {
   mixHidden: new Set(),
   lab: null,
   labState: 'idle',      // idle | loading | ready | error
+  lp: null,              // manifeste des captures de pages de destination
   labSpan: '12',         // profondeur de la chronologie, en mois
   labPhase: 'all',
 
@@ -8005,13 +8006,72 @@ function labStatBlock(label, value, delta, dir) {
   return box;
 }
 
-function renderLabArm(arm, ref, role) {
+/**
+ * Capture de la page de destination d'un bras, si elle est renseignée.
+ *
+ * L'appariement vient de data/landing-pages.json, renseigné à la main : l'API ne
+ * donne pas l'URL finale d'un bras d'expérience, et la deviner d'après un nom de
+ * campagne serait une invention.
+ */
+function labShot(experiment, role) {
+  const pages = (S.lp && S.lp.pages) || [];
+  return pages.find((p) => p.experiment === experiment.name && p.arm === role) || null;
+}
+
+function renderLabShot(shot) {
+  const fig = document.createElement('figure');
+  fig.className = 'lab-shot';
+
+  // Un lien, pas seulement une image : on veut pouvoir ouvrir la vraie page.
+  const link = document.createElement('a');
+  link.href = shot.url;
+  link.target = '_blank';
+  link.rel = 'noopener noreferrer';
+  link.title = `Ouvrir ${shot.url}`;
+
+  const img = document.createElement('img');
+  img.src = shot.image;
+  img.alt = `Page de destination — ${shot.label || shot.url}`;
+  // Chargement paresseux : trois fiches ouvertes font six captures, dont on ne
+  // regarde qu'une paire à la fois.
+  img.loading = 'lazy';
+  img.decoding = 'async';
+  link.appendChild(img);
+  fig.appendChild(link);
+
+  const cap = document.createElement('figcaption');
+  const path = document.createElement('a');
+  path.href = shot.url;
+  path.target = '_blank';
+  path.rel = 'noopener noreferrer';
+  // Le chemin suffit à distinguer les deux pages, l'hôte est le même.
+  path.textContent = shot.url.replace(/^https?:\/\/(www\.)?/, '');
+  cap.appendChild(path);
+  if (shot.captured_at) {
+    const when = document.createElement('span');
+    when.textContent = ` · capture du ${fmtDateShort(shot.captured_at)}`;
+    cap.appendChild(when);
+  }
+  fig.appendChild(cap);
+  return fig;
+}
+
+function renderLabArm(arm, ref, role, experiment) {
   const wrap = document.createElement('div');
   wrap.className = 'lab-arm' + (role === 'variant' ? ' lab-arm--variant' : '');
 
   const r = document.createElement('div');
   r.className = 'lab-arm__role';
   r.textContent = role === 'variant' ? 'Variante' : 'Témoin';
+  if (experiment) {
+    const shot = labShot(experiment, role);
+    if (shot) {
+      const badge = document.createElement('span');
+      badge.className = 'lab-arm__lp';
+      badge.textContent = shot.label || 'page de destination';
+      r.appendChild(badge);
+    }
+  }
   wrap.appendChild(r);
 
   const n = document.createElement('p');
@@ -8022,6 +8082,11 @@ function renderLabArm(arm, ref, role) {
   n.textContent = names
     + (arm.split ? ` · ${arm.split} % du trafic` : '');
   wrap.appendChild(n);
+
+  if (experiment) {
+    const shot = labShot(experiment, role);
+    if (shot) wrap.appendChild(renderLabShot(shot));
+  }
 
   const t = labArmTotals(arm);
   const grid = document.createElement('div');
@@ -8100,12 +8165,12 @@ function renderLabCard(x) {
   arms.className = 'lab-arms';
   const cT = control ? labArmTotals(control) : null;
 
-  if (control) arms.appendChild(renderLabArm(control, null, 'control'));
+  if (control) arms.appendChild(renderLabArm(control, null, 'control', x));
   const vs = document.createElement('div');
   vs.className = 'lab-vs';
   vs.textContent = 'vs';
   arms.appendChild(vs);
-  if (variant) arms.appendChild(renderLabArm(variant, cT, 'variant'));
+  if (variant) arms.appendChild(renderLabArm(variant, cT, 'variant', x));
   card.appendChild(arms);
 
   card.appendChild(renderLabVerdict(x, control, variant));
@@ -8406,9 +8471,27 @@ function renderLab() {
   renderLabRegistry(rows);
 }
 
+/**
+ * Manifeste des pages de destination. Facultatif : sans lui, les fiches
+ * s'affichent sans capture, ce qui est le cas de la plupart des tests.
+ */
+async function loadLandingPages() {
+  try {
+    const res = await fetch('data/landing-pages.json', { cache: 'no-cache' });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    S.lp = await res.json();
+  } catch (err) {
+    console.info(`Captures de pages de destination absentes (${err.message}). `
+      + `Renseignez data/landing-pages.json puis « python scripts/capture_lp.py ».`);
+  }
+}
+
 async function loadLab() {
   if (S.labState !== 'idle') return;
   S.labState = 'loading';
+  // Le manifeste avant le rendu : sinon la première passe s'affiche sans les
+  // captures et scintille quand elles arrivent.
+  await loadLandingPages();
   try {
     const res = await fetch('data/experiments.json', { cache: 'no-cache' });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);

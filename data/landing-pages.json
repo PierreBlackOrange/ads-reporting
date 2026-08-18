@@ -1,0 +1,39 @@
+{
+ "_lisez_moi": [
+  "Associe une capture de page de destination à un bras d'expérience.",
+  "Renseigné à la main : l'API Google Ads ne donne pas l'URL finale d'un bras,",
+  "et deux campagnes d'un même test peuvent pointer vers des pages différentes",
+  "sans que rien dans les données ne le dise.",
+  "",
+  "Pour ajouter un test : une entrée par bras, puis",
+  "  python scripts/capture_lp.py",
+  "qui capture les URL et réécrit les images dans assets/lp/.",
+  "",
+  "L'appariement se fait sur (experiment, arm). « arm » vaut control ou variant.",
+  "Ce dépôt est public : les captures y seront publiques aussi."
+ ],
+ "meta": {
+  "viewport": "624x1355",
+  "note": "Largeur choisie parce que la page a une largeur minimale supérieure à 390 px : plus étroit, le bouton « Se connecter » et le CTA sortent du cadre."
+ },
+ "pages": [
+  {
+   "experiment": "AB test Variante LP Shopping",
+   "account": "gdm_spiice-google-fr",
+   "arm": "variant",
+   "label": "Variante — pack rose",
+   "url": "https://www.spiice.com/jW4/c27",
+   "image": "assets/lp/spiice-jW4-c27.jpg",
+   "captured_at": "2026-08-18"
+  },
+  {
+   "experiment": "AB test Variante LP Shopping",
+   "account": "gdm_spiice-google-fr",
+   "arm": "control",
+   "label": "Témoin — pack pastel",
+   "url": "https://www.spiice.com/jW4/Sex",
+   "image": "assets/lp/spiice-jW4-Sex.jpg",
+   "captured_at": "2026-08-18"
+  }
+ ]
+}
