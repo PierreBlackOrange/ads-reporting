@@ -33,9 +33,9 @@ jobs:
   refresh:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.12'
 
@@ -163,7 +163,7 @@ jobs:
           for f in data/data.json data/aimax.json data/gender.json \
                    data/tracking.json data/changelog.json data/changes.json \
                    data/releases.json data/experiments.json; do
-            [ -f "$f" ] && FILES="$FILES $f"
+            if [ -f "$f" ]; then FILES="$FILES $f"; fi
           done
           if [ -z "$FILES" ]; then
             echo "Aucun fichier de données à commiter."
@@ -171,16 +171,53 @@ jobs:
           fi
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          # « -f » est délibéré : changelog.json et aimax.json sont gitignorés
-          # pour qu'aucun « git add . » depuis un poste ne publie un jeu
-          # d'exemple ou des requêtes de recherche par accident. Ici le contenu
-          # ne peut venir que du Sheet et de l'API, d'où l'exception assumée.
-          git add -f $FILES
-          # --cached : le contrôle porte sur l'index, sinon un fichier
-          # nouvellement créé passerait pour « aucun changement ».
-          if git diff --cached --quiet; then
-            echo "Aucun changement."
-            exit 0
-          fi
-          git commit -m "Mise à jour automatique des données Google Ads"
-          git push
+
+          # Pourquoi une boucle de réessai, et pas un simple « git push ».
+          #
+          # Ce workflow enchaîne sept extractions sur 86 comptes : il dure plus
+          # longtemps que l'intervalle du workflow Live, qui pousse toutes les
+          # quinze minutes. La branche a donc presque toujours avancé entre le
+          # checkout et le push, et le push était rejeté — d'où l'échec quotidien
+          # de l'étape depuis que ce workflow s'est allongé.
+          #
+          # « reset --mixed » plutôt que « pull --rebase » : nos fichiers sont
+          # entièrement régénérés, il n'y a donc rien à fusionner. On replace HEAD
+          # ET l'index sur l'état distant en gardant le disque intact, puis on
+          # restage nos seuls fichiers. Aucun conflit possible, même si l'autre
+          # exécution a touché les mêmes fichiers.
+          #
+          # Surtout pas « --soft » : il garderait l'index du commit d'origine, et
+          # le commit suivant aurait ANNULÉ le live.json poussé entre-temps par
+          # l'autre workflow. « --mixed » laisse au contraire ces fichiers-là hors
+          # de l'index, donc intacts.
+          #
+          # FETCH_HEAD et non « origin/$BRANCH » : la présence de la réf de suivi
+          # dépend de la configuration du checkout, FETCH_HEAD est toujours écrit.
+          BRANCH="${GITHUB_REF_NAME:-main}"
+          for attempt in 1 2 3 4 5; do
+            git fetch --quiet origin "$BRANCH"
+            git reset --mixed --quiet FETCH_HEAD
+
+            # « -f » est délibéré : changelog.json et aimax.json sont gitignorés
+            # pour qu'aucun « git add . » depuis un poste ne publie un jeu
+            # d'exemple ou des requêtes de recherche par accident. Ici le contenu
+            # ne peut venir que du Sheet et de l'API, d'où l'exception assumée.
+            git add -f $FILES
+
+            # --cached : le contrôle porte sur l'index, sinon un fichier
+            # nouvellement créé passerait pour « aucun changement ».
+            if git diff --cached --quiet; then
+              echo "Aucun changement."
+              exit 0
+            fi
+
+            git commit --quiet -m "Mise à jour automatique des données Google Ads"
+            if git push --quiet origin "HEAD:$BRANCH"; then
+              echo "Poussé à la tentative $attempt."
+              exit 0
+            fi
+            echo "::notice::Push rejeté (tentative $attempt/5) — la branche a avancé, nouvelle tentative."
+            sleep $((attempt * 5))
+          done
+          echo "::error::Push impossible après 5 tentatives : la branche bouge plus vite que ce workflow."
+          exit 1
