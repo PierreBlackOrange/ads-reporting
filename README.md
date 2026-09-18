@@ -800,6 +800,56 @@ plan GitHub payant, ou un hébergement protégé par authentification.
 
 ---
 
+## Emporter le dashboard sur un autre appareil
+
+Deux besoins distincts, deux réponses.
+
+### Continuer à travailler dessus — cloner
+
+```bash
+git clone https://github.com/PierreBlackOrange/ads-reporting.git
+cp scripts/config.example.json scripts/config.json   # à remplir
+```
+
+`scripts/config.json` est gitignoré et **n'est donc pas dans le clone** : il faut
+le recréer sur la nouvelle machine, ou relancer `get_refresh_token.py`. Ne le
+transmettez pas par messagerie — un refresh token Google Ads donne un accès en
+écriture à tous les comptes du MCC.
+
+### Juste consulter — un seul fichier
+
+```bash
+python scripts/build_standalone.py
+python scripts/build_standalone.py --skip terms,tracking   # plus léger
+python scripts/build_standalone.py --out ~/Bureau/rapport.html
+```
+
+Produit `dashboard-autonome.html` (~5 Mo) : CSS, JavaScript, les onze jeux de
+données et les captures de pages, tout est dedans. Le fichier s'ouvre d'un
+double-clic sur n'importe quelle machine — sans Python, sans serveur, sans réseau.
+
+**Copier le dossier ne suffirait pas.** La page charge ses données par `fetch`, et
+un navigateur qui ouvre un fichier en `file://` refuse ces requêtes : le dashboard
+s'afficherait vide, sans autre signal qu'une ligne de console. Le script contourne
+le problème en interceptant `fetch` avant le démarrage de l'application, qui
+continue de croire qu'elle lit des fichiers — il n'y a donc pas deux versions du
+code à maintenir.
+
+Trois limites, assumées :
+
+- **les données sont figées** à la date de l'export, inscrite dans le pied de page ;
+- **les boutons « Régénérer » disparaissent** d'eux-mêmes : ils mènent à GitHub
+  Actions, que l'application ne sait localiser qu'en étant servie depuis Pages ;
+- **le lien « Cannibalisation » est retiré** : c'est une seconde page, qu'un
+  fichier unique ne peut pas embarquer — les navigateurs bloquent la navigation
+  vers une URL `data:`.
+
+Le reste fonctionne : filtres, vues tableau, export CSV, impression PDF.
+
+⚠️ Ce fichier contient **toutes** vos données, y compris les requêtes de recherche
+réellement tapées par des internautes. Il se transmet comme un document
+confidentiel.
+
 ## 1. Voir le dashboard en local
 
 Le dépôt contient déjà un `data/data.json` de démonstration.

@@ -43,3 +43,9 @@ venv/
 Thumbs.db
 desktop.ini
 .DS_Store
+
+# ── Export autonome ─────────────────────────────────────────────────────────
+# Produit par scripts/build_standalone.py : un instantané de 5 Mo qui embarque
+# toutes les données. Le recommiter à chaque export gonflerait l'historique pour
+# un fichier reconstructible en une commande.
+dashboard-autonome.html
